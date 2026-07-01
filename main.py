@@ -33,6 +33,10 @@ from enterprise.licensing import (
     validate_license,
 )
 
+from routers.release_trust import router as release_trust_router
+
+app.include_router(release_trust_router, prefix="/pipeline/api")
+
 DATABASE_PATH = "/app/data/app.db"  # This path must match your Helm `mountPath`
 
 # Setup logging
@@ -2151,7 +2155,7 @@ def get_ldap_users(principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFOR
         return JSONResponse(content=users)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": "Failed to fetch LDAP users"})
-    
+
 @app.get("/my_applications")
 def get_user_applications(
     email: Optional[str] = None,
@@ -2850,7 +2854,7 @@ def get_console_logs(
     response = requests.get(log_url, auth=(JENKINS_USER, JENKINS_TOKEN), verify=False)
     return {"build_number": build_number, "job_name": job_name, "logs": response.text}
 
-#vulnerabilities_store = []
+# vulnerabilities_store = []
 
 # @app.post("/vulnerabilities")
 # async def upload_vulnerabilities(payload: VulnerabilityUpload, db: Session = Depends(get_db)):
@@ -3151,7 +3155,7 @@ def serialize_security_finding(v: Vulnerability) -> dict:
             "evidence_uri": v.evidence_uri,
         },
     }
-    
+
 @app.post("/register_application")
 def register_application(
     request: RegisterAppRequest,
@@ -3329,7 +3333,6 @@ async def github_webhook(
         return JSONResponse(status_code=500, content={"error": "Failed to process webhook"})
 
 
-
 # from fastapi import FastAPI, Request
 # from fastapi import APIRouter, UploadFile
 # from fastapi.middleware.cors import CORSMiddleware
@@ -3394,7 +3397,7 @@ from ldap3.utils.conv import escape_filter_chars
 #     predictedSeverity: Optional[str] = None
 
 # class VulnerabilityUpload(BaseModel):
-#     vulnerabilities: List[VulnerabilityModel]    
+#     vulnerabilities: List[VulnerabilityModel]
 
 # class OPARiskModel(BaseModel):
 #     #source: str = "OPA"
@@ -3404,7 +3407,7 @@ from ldap3.utils.conv import escape_filter_chars
 #     risk_score: float
 
 # class OPARiskUpload(BaseModel):
-#     risks: List[OPARiskModel]        
+#     risks: List[OPARiskModel]
 
 # @app.post("/login")
 # async def login(request: Request):
@@ -3529,7 +3532,7 @@ from ldap3.utils.conv import escape_filter_chars
 # async def upload_vulnerabilities(payload: VulnerabilityUpload):
 #     try:
 #         # (Optional) Save to DB here if needed
-        
+
 #         # For now, just print the vulnerabilities for debugging
 #         for vuln in payload.vulnerabilities:
 #             try:
@@ -3541,19 +3544,19 @@ from ldap3.utils.conv import escape_filter_chars
 #                 print(f"Received vulnerability: {vuln}")
 #                 vulnerabilities_store.append(vuln.dict())  # Save into in-memory store
 #             except Exception as e:
-#                 print(f"Failed to process a vulnerability: {e}")    
+#                 print(f"Failed to process a vulnerability: {e}")
 #         return {"status": "success", "received_count": len(payload.vulnerabilities)}
-    
+
 #     except Exception as e:
 #         print(f"Error processing vulnerabilities: {e}")
-#         return JSONResponse(status_code=500, content={"error": "Failed to process vulnerabilities"}) 
-    
+#         return JSONResponse(status_code=500, content={"error": "Failed to process vulnerabilities"})
+
 # # ⬇️ ADD THIS GET FUNCTION ⬇️
 # @app.get("/vulnerabilities")
 # async def get_vulnerabilities(source: Optional[str] = None):
 #     if source:
 #         return [v for v in vulnerabilities_store if v.get("source") == source]
-#     return vulnerabilities_store   
+#     return vulnerabilities_store
 
 # @app.delete("/vulnerabilities/clear")
 # def clear_vulnerabilities():

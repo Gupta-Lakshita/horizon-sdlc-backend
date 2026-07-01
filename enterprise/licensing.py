@@ -14,7 +14,9 @@ class LicenseValidationError(ValueError):
 
 
 def license_enforcement_enabled() -> bool:
-    return os.getenv("ENTERPRISE_LICENSE_ENFORCEMENT_ENABLED", "false").lower() == "true"
+    return (
+        os.getenv("ENTERPRISE_LICENSE_ENFORCEMENT_ENABLED", "false").lower() == "true"
+    )
 
 
 def _canonical_payload(payload: Dict[str, Any]) -> bytes:
@@ -26,11 +28,15 @@ def _canonical_payload(payload: Dict[str, Any]) -> bytes:
         "validation_mode",
     }
     signed_payload = {k: v for k, v in payload.items() if k not in runtime_fields}
-    return json.dumps(signed_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(signed_payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
 
 
 def _expected_signature(payload: Dict[str, Any], secret: str) -> str:
-    digest = hmac.new(secret.encode("utf-8"), _canonical_payload(payload), hashlib.sha256).digest()
+    digest = hmac.new(
+        secret.encode("utf-8"), _canonical_payload(payload), hashlib.sha256
+    ).digest()
     return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
 
@@ -57,7 +63,9 @@ def _b64url_decode(value: str) -> bytes:
     try:
         return base64.urlsafe_b64decode(normalized)
     except (binascii.Error, ValueError) as exc:
-        raise LicenseValidationError("License signature is not valid base64url.") from exc
+        raise LicenseValidationError(
+            "License signature is not valid base64url."
+        ) from exc
 
 
 def _load_public_key_entries() -> list[Dict[str, str]]:
@@ -65,36 +73,54 @@ def _load_public_key_entries() -> list[Dict[str, str]]:
 
     inline_pem = os.getenv("ENTERPRISE_LICENSE_PUBLIC_KEY_PEM", "").strip()
     if inline_pem:
-        entries.append({"key_id": os.getenv("ENTERPRISE_LICENSE_PUBLIC_KEY_ID", "").strip(), "pem": inline_pem})
+        entries.append(
+            {
+                "key_id": os.getenv("ENTERPRISE_LICENSE_PUBLIC_KEY_ID", "").strip(),
+                "pem": inline_pem,
+            }
+        )
 
     public_key_file = os.getenv("ENTERPRISE_LICENSE_PUBLIC_KEY_FILE", "").strip()
     if public_key_file:
         path = Path(public_key_file)
         if not path.exists():
-            raise LicenseValidationError(f"Configured license public key file does not exist: {public_key_file}")
-        entries.append({"key_id": os.getenv("ENTERPRISE_LICENSE_PUBLIC_KEY_ID", "").strip(), "pem": path.read_text().strip()})
+            raise LicenseValidationError(
+                f"Configured license public key file does not exist: {public_key_file}"
+            )
+        entries.append(
+            {
+                "key_id": os.getenv("ENTERPRISE_LICENSE_PUBLIC_KEY_ID", "").strip(),
+                "pem": path.read_text().strip(),
+            }
+        )
 
     key_set_json = os.getenv("ENTERPRISE_LICENSE_PUBLIC_KEY_SET_JSON", "").strip()
     key_set_file = os.getenv("ENTERPRISE_LICENSE_PUBLIC_KEY_SET_FILE", "").strip()
     if key_set_file:
         path = Path(key_set_file)
         if not path.exists():
-            raise LicenseValidationError(f"Configured license public key set file does not exist: {key_set_file}")
+            raise LicenseValidationError(
+                f"Configured license public key set file does not exist: {key_set_file}"
+            )
         key_set_json = path.read_text().strip()
 
     if key_set_json:
         try:
             key_set = json.loads(key_set_json)
         except json.JSONDecodeError as exc:
-            raise LicenseValidationError("Configured license public key set JSON is invalid.") from exc
+            raise LicenseValidationError(
+                "Configured license public key set JSON is invalid."
+            ) from exc
 
         if isinstance(key_set, dict) and isinstance(key_set.get("keys"), list):
             for item in key_set["keys"]:
                 if isinstance(item, dict) and item.get("public_key_pem"):
-                    entries.append({
-                        "key_id": str(item.get("key_id") or item.get("kid") or ""),
-                        "pem": str(item["public_key_pem"]).strip(),
-                    })
+                    entries.append(
+                        {
+                            "key_id": str(item.get("key_id") or item.get("kid") or ""),
+                            "pem": str(item["public_key_pem"]).strip(),
+                        }
+                    )
         elif isinstance(key_set, dict):
             for key_id, pem in key_set.items():
                 if isinstance(pem, str):
@@ -106,25 +132,33 @@ def _load_public_key_entries() -> list[Dict[str, str]]:
 def _select_public_key(license_doc: Dict[str, Any]) -> str:
     entries = _load_public_key_entries()
     if not entries:
-        raise LicenseValidationError("RSA license verification requires ENTERPRISE_LICENSE_PUBLIC_KEY_PEM or ENTERPRISE_LICENSE_PUBLIC_KEY_SET_JSON.")
+        raise LicenseValidationError(
+            "RSA license verification requires ENTERPRISE_LICENSE_PUBLIC_KEY_PEM or ENTERPRISE_LICENSE_PUBLIC_KEY_SET_JSON."
+        )
 
     expected_key_id = str(license_doc.get("signature_key_id") or "").strip()
     if expected_key_id:
         for entry in entries:
             if entry.get("key_id") == expected_key_id:
                 return entry["pem"]
-        raise LicenseValidationError(f"No configured license public key matches signature_key_id '{expected_key_id}'.")
+        raise LicenseValidationError(
+            f"No configured license public key matches signature_key_id '{expected_key_id}'."
+        )
 
     return entries[0]["pem"]
 
 
-def _verify_rsa_signature(license_doc: Dict[str, Any], signature: str, algorithm: str) -> None:
+def _verify_rsa_signature(
+    license_doc: Dict[str, Any], signature: str, algorithm: str
+) -> None:
     try:
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import padding, utils
     except ImportError as exc:
-        raise LicenseValidationError("cryptography package is required for RSA license verification.") from exc
+        raise LicenseValidationError(
+            "cryptography package is required for RSA license verification."
+        ) from exc
 
     public_key_pem = _select_public_key(license_doc)
     public_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
@@ -135,19 +169,27 @@ def _verify_rsa_signature(license_doc: Dict[str, Any], signature: str, algorithm
     if normalized_algorithm in {"RSASSA_PKCS1_V1_5_SHA_256", "RS256"}:
         signature_padding = padding.PKCS1v15()
     elif normalized_algorithm in {"RSASSA_PSS_SHA_256", "PS256"}:
-        signature_padding = padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=hashes.SHA256().digest_size)
+        signature_padding = padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()), salt_length=hashes.SHA256().digest_size
+        )
     else:
-        raise LicenseValidationError(f"Unsupported RSA license signature algorithm '{algorithm}'.")
+        raise LicenseValidationError(
+            f"Unsupported RSA license signature algorithm '{algorithm}'."
+        )
 
     try:
-        public_key.verify(signature_bytes, digest, signature_padding, utils.Prehashed(hashes.SHA256()))
+        public_key.verify(
+            signature_bytes, digest, signature_padding, utils.Prehashed(hashes.SHA256())
+        )
     except InvalidSignature as exc:
         raise LicenseValidationError("License signature is invalid.") from exc
 
 
 def _verify_license_signature(license_doc: Dict[str, Any]) -> None:
     signature = license_doc.get("signature") or license_doc.get("license_signature")
-    verification_required = _env_bool("ENTERPRISE_LICENSE_SIGNATURE_VERIFICATION_REQUIRED", True)
+    verification_required = _env_bool(
+        "ENTERPRISE_LICENSE_SIGNATURE_VERIFICATION_REQUIRED", True
+    )
     if not signature:
         if verification_required:
             raise LicenseValidationError("Signed license is required.")
@@ -157,22 +199,34 @@ def _verify_license_signature(license_doc: Dict[str, Any]) -> None:
     signing_mode = str(license_doc.get("signature_mode") or "").strip().lower()
     secret = os.getenv("ENTERPRISE_LICENSE_SIGNING_SECRET", "").strip()
 
-    if algorithm in {"HMAC_SHA256", ""} and (secret or signing_mode in {"", "local-hmac"}):
+    if algorithm in {"HMAC_SHA256", ""} and (
+        secret or signing_mode in {"", "local-hmac"}
+    ):
         if not secret:
             if verification_required:
-                raise LicenseValidationError("HMAC license verification requires ENTERPRISE_LICENSE_SIGNING_SECRET.")
+                raise LicenseValidationError(
+                    "HMAC license verification requires ENTERPRISE_LICENSE_SIGNING_SECRET."
+                )
             return
         expected = _expected_signature(license_doc, secret)
         if not hmac.compare_digest(signature, expected):
             raise LicenseValidationError("License signature is invalid.")
         return
 
-    if algorithm in {"RSASSA_PKCS1_V1_5_SHA_256", "RSASSA_PSS_SHA_256", "RS256", "PS256"} or signing_mode == "aws-kms":
-        _verify_rsa_signature(license_doc, signature, algorithm or "RSASSA_PKCS1_V1_5_SHA_256")
+    if (
+        algorithm
+        in {"RSASSA_PKCS1_V1_5_SHA_256", "RSASSA_PSS_SHA_256", "RS256", "PS256"}
+        or signing_mode == "aws-kms"
+    ):
+        _verify_rsa_signature(
+            license_doc, signature, algorithm or "RSASSA_PKCS1_V1_5_SHA_256"
+        )
         return
 
     if verification_required:
-        raise LicenseValidationError(f"Unsupported license signature algorithm '{algorithm or signing_mode}'.")
+        raise LicenseValidationError(
+            f"Unsupported license signature algorithm '{algorithm or signing_mode}'."
+        )
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -200,13 +254,19 @@ def _load_license_file() -> Dict[str, Any]:
         return {}
     path = Path(license_file)
     if not path.exists():
-        raise LicenseValidationError(f"Configured license file does not exist: {license_file}")
+        raise LicenseValidationError(
+            f"Configured license file does not exist: {license_file}"
+        )
     with path.open() as f:
         return json.load(f)
 
 
 def _license_cache_path() -> Path:
-    return Path(os.getenv("ENTERPRISE_LICENSE_CACHE_FILE", "/app/data/enterprise-license-cache.json"))
+    return Path(
+        os.getenv(
+            "ENTERPRISE_LICENSE_CACHE_FILE", "/app/data/enterprise-license-cache.json"
+        )
+    )
 
 
 def load_cached_license() -> Dict[str, Any]:
@@ -240,17 +300,40 @@ def default_license_from_env() -> Dict[str, Any]:
 
     return {
         "client_id": os.getenv("ENTERPRISE_CLIENT_ID", "horizon-internal"),
-        "client_name": os.getenv("ENTERPRISE_CLIENT_NAME", "Horizon Relevance Internal"),
+        "client_name": os.getenv(
+            "ENTERPRISE_CLIENT_NAME", "Horizon Relevance Internal"
+        ),
         "license_key": os.getenv("ENTERPRISE_LICENSE_KEY", "internal-dev-license"),
         "license_type": os.getenv("ENTERPRISE_LICENSE_TYPE", "internal"),
-        "expires_at": os.getenv("ENTERPRISE_LICENSE_EXPIRES_AT", "2099-12-31T23:59:59Z"),
-        "enabled_pipelines": _split_csv(os.getenv("ENTERPRISE_ENABLED_PIPELINES", "Build & Deploy Pipeline,Validation Pipeline,Release Promotion Pipeline")),
-        "enabled_features": _split_csv(os.getenv("ENTERPRISE_ENABLED_FEATURES", "build,artifact_publish,code_scan,image_scan,policy_validation,static_application_security,test_suites,notifications,secret_management,prod_deploy,ai_remediation")),
-        "allowed_environments": _split_csv(os.getenv("ENTERPRISE_ALLOWED_ENVIRONMENTS", "DEV,QA,STAGE,PROD,EKS-NONPROD,EKS-PROD")),
-        "allowed_aws_account_ids": _split_csv(os.getenv("ENTERPRISE_ALLOWED_AWS_ACCOUNT_IDS", "")),
+        "expires_at": os.getenv(
+            "ENTERPRISE_LICENSE_EXPIRES_AT", "2099-12-31T23:59:59Z"
+        ),
+        "enabled_pipelines": _split_csv(
+            os.getenv(
+                "ENTERPRISE_ENABLED_PIPELINES",
+                "Build & Deploy Pipeline,Validation Pipeline,Release Promotion Pipeline",
+            )
+        ),
+        "enabled_features": _split_csv(
+            os.getenv(
+                "ENTERPRISE_ENABLED_FEATURES",
+                "build,artifact_publish,code_scan,image_scan,policy_validation,static_application_security,test_suites,notifications,secret_management,prod_deploy,ai_remediation,release_trust",
+            )
+        ),
+        "allowed_environments": _split_csv(
+            os.getenv(
+                "ENTERPRISE_ALLOWED_ENVIRONMENTS",
+                "DEV,QA,STAGE,PROD,EKS-NONPROD,EKS-PROD",
+            )
+        ),
+        "allowed_aws_account_ids": _split_csv(
+            os.getenv("ENTERPRISE_ALLOWED_AWS_ACCOUNT_IDS", "")
+        ),
         "installation_id": os.getenv("ENTERPRISE_INSTALLATION_ID", ""),
         "max_repos": int(os.getenv("ENTERPRISE_MAX_REPOS", "999999")),
-        "max_builds_per_month": int(os.getenv("ENTERPRISE_MAX_BUILDS_PER_MONTH", "999999")),
+        "max_builds_per_month": int(
+            os.getenv("ENTERPRISE_MAX_BUILDS_PER_MONTH", "999999")
+        ),
         "max_users": int(os.getenv("ENTERPRISE_MAX_USERS", "999999")),
         "license_mode": os.getenv("ENTERPRISE_LICENSE_MODE", "offline-file"),
     }
@@ -258,7 +341,11 @@ def default_license_from_env() -> Dict[str, Any]:
 
 def merge_request_license(request_values: Dict[str, Any]) -> Dict[str, Any]:
     license_doc = default_license_from_env()
-    license_mode = str(license_doc.get("license_mode") or os.getenv("ENTERPRISE_LICENSE_MODE", "")).strip().lower()
+    license_mode = (
+        str(license_doc.get("license_mode") or os.getenv("ENTERPRISE_LICENSE_MODE", ""))
+        .strip()
+        .lower()
+    )
     has_server_synced_license = bool(
         license_doc.get("last_synced_at")
         or license_doc.get("signature")
@@ -289,7 +376,9 @@ def merge_request_license(request_values: Dict[str, Any]) -> Dict[str, Any]:
         value = request_values.get(key)
         if value not in (None, "", []):
             normalized_key = "signature" if key == "license_signature" else key
-            normalized_key = "expires_at" if key == "license_expires_at" else normalized_key
+            normalized_key = (
+                "expires_at" if key == "license_expires_at" else normalized_key
+            )
             license_doc[normalized_key] = value
     return license_doc
 
@@ -343,15 +432,45 @@ def _contains_pipeline(values: Iterable[str], expected: str) -> bool:
 
 
 FEATURE_ALIASES = {
-    "api_regression": {"api_regression", "api_regression_test", "api_testing", "test_suites"},
+    "api_regression": {
+        "api_regression",
+        "api_regression_test",
+        "api_testing",
+        "test_suites",
+    },
     "artifact_publish": {"artifact_publish", "artifact_publishing"},
     "build": {"build", "build_deploy"},
     "code_scan": {"code_scan", "code_quality", "code_quality_scan", "sonarqube"},
-    "image_scan": {"image_scan", "container_iac_scan", "container_scan", "container_vulnerability_scan"},
-    "performance_testing": {"performance_testing", "performance_test", "jmeter", "test_suites"},
-    "policy_scan": {"policy_scan", "policy_validation", "opa", "policy_validation_scan"},
-    "policy_validation": {"policy_scan", "policy_validation", "opa", "policy_validation_scan"},
-    "prod_deploy": {"prod_deploy", "production_promotion", "production_deployment", "release_promotion"},
+    "image_scan": {
+        "image_scan",
+        "container_iac_scan",
+        "container_scan",
+        "container_vulnerability_scan",
+    },
+    "performance_testing": {
+        "performance_testing",
+        "performance_test",
+        "jmeter",
+        "test_suites",
+    },
+    "policy_scan": {
+        "policy_scan",
+        "policy_validation",
+        "opa",
+        "policy_validation_scan",
+    },
+    "policy_validation": {
+        "policy_scan",
+        "policy_validation",
+        "opa",
+        "policy_validation_scan",
+    },
+    "prod_deploy": {
+        "prod_deploy",
+        "production_promotion",
+        "production_deployment",
+        "release_promotion",
+    },
     "release_promotion": {"release_promotion", "production_promotion", "prod_deploy"},
     "static_application_security": {
         "static_application_security",
@@ -361,7 +480,12 @@ FEATURE_ALIASES = {
         "code_scan",
         "code_quality_scan",
     },
-    "test_suites": {"test_suites", "ui_testing", "api_regression", "performance_testing"},
+    "test_suites": {
+        "test_suites",
+        "ui_testing",
+        "api_regression",
+        "performance_testing",
+    },
     "ui_testing": {"ui_testing", "ui_end_to_end", "selenium", "test_suites"},
 }
 
@@ -385,15 +509,23 @@ def validate_license(
         return license_doc
 
     if not license_doc.get("client_id"):
-        raise LicenseValidationError("client_id is required when license enforcement is enabled.")
+        raise LicenseValidationError(
+            "client_id is required when license enforcement is enabled."
+        )
     if not license_doc.get("license_key"):
-        raise LicenseValidationError("license_key is required when license enforcement is enabled.")
+        raise LicenseValidationError(
+            "license_key is required when license enforcement is enabled."
+        )
 
-    entitlement_status = str(
-        license_doc.get("entitlement_status")
-        or license_doc.get("license_status")
-        or "active"
-    ).strip().lower()
+    entitlement_status = (
+        str(
+            license_doc.get("entitlement_status")
+            or license_doc.get("license_status")
+            or "active"
+        )
+        .strip()
+        .lower()
+    )
     if entitlement_status in {"revoked", "suspended", "inactive", "disabled"}:
         raise LicenseValidationError(f"License entitlement is {entitlement_status}.")
 
@@ -407,36 +539,69 @@ def validate_license(
     license_state = "active"
     if expires_at_dt <= now:
         grace_hours = _env_int("ENTERPRISE_LICENSE_CACHE_GRACE_HOURS", 72)
-        license_mode = str(license_doc.get("license_mode") or os.getenv("ENTERPRISE_LICENSE_MODE", "")).strip().lower()
+        license_mode = (
+            str(
+                license_doc.get("license_mode")
+                or os.getenv("ENTERPRISE_LICENSE_MODE", "")
+            )
+            .strip()
+            .lower()
+        )
         grace_expires_at = expires_at_dt + timedelta(hours=grace_hours)
-        if license_mode == "online-sync" and grace_hours > 0 and now <= grace_expires_at:
+        if (
+            license_mode == "online-sync"
+            and grace_hours > 0
+            and now <= grace_expires_at
+        ):
             license_state = "grace_period"
-            license_doc["warning"] = "License is expired, but cached online entitlement is within the configured grace period."
+            license_doc["warning"] = (
+                "License is expired, but cached online entitlement is within the configured grace period."
+            )
             license_doc["grace_expires_at"] = _format_datetime(grace_expires_at)
         else:
             raise LicenseValidationError("License is expired.")
 
     enabled_pipelines = license_doc.get("enabled_pipelines") or []
     if enabled_pipelines and not _contains_pipeline(enabled_pipelines, pipeline_name):
-        raise LicenseValidationError(f"Pipeline '{pipeline_name}' is not enabled for this license.")
+        raise LicenseValidationError(
+            f"Pipeline '{pipeline_name}' is not enabled for this license."
+        )
 
     allowed_environments = license_doc.get("allowed_environments") or []
     if allowed_environments and not _contains(allowed_environments, target_env):
-        raise LicenseValidationError(f"Environment '{target_env}' is not enabled for this license.")
+        raise LicenseValidationError(
+            f"Environment '{target_env}' is not enabled for this license."
+        )
 
-    allowed_aws_account_ids = license_doc.get("allowed_aws_account_ids") or _split_csv(os.getenv("ENTERPRISE_ALLOWED_AWS_ACCOUNT_IDS", ""))
-    if allowed_aws_account_ids and aws_account_id and not _contains(allowed_aws_account_ids, aws_account_id):
-        raise LicenseValidationError(f"AWS account '{aws_account_id}' is not enabled for this license.")
+    allowed_aws_account_ids = license_doc.get("allowed_aws_account_ids") or _split_csv(
+        os.getenv("ENTERPRISE_ALLOWED_AWS_ACCOUNT_IDS", "")
+    )
+    if (
+        allowed_aws_account_ids
+        and aws_account_id
+        and not _contains(allowed_aws_account_ids, aws_account_id)
+    ):
+        raise LicenseValidationError(
+            f"AWS account '{aws_account_id}' is not enabled for this license."
+        )
 
     expected_installation_id = license_doc.get("installation_id") or ""
     runtime_installation_id = os.getenv("ENTERPRISE_INSTALLATION_ID", "").strip()
-    if expected_installation_id and runtime_installation_id and expected_installation_id != runtime_installation_id:
-        raise LicenseValidationError("License is not valid for this product installation.")
+    if (
+        expected_installation_id
+        and runtime_installation_id
+        and expected_installation_id != runtime_installation_id
+    ):
+        raise LicenseValidationError(
+            "License is not valid for this product installation."
+        )
 
     enabled_features = license_doc.get("enabled_features") or []
     for feature in requested_features:
         if enabled_features and not _feature_enabled(enabled_features, feature):
-            raise LicenseValidationError(f"Feature '{feature}' is not enabled for this license.")
+            raise LicenseValidationError(
+                f"Feature '{feature}' is not enabled for this license."
+            )
 
     license_doc["validation_mode"] = "enforced"
     license_doc["status"] = license_state
@@ -456,7 +621,8 @@ def license_summary(license_doc: Dict[str, Any]) -> Dict[str, Any]:
         "enabled_features": license_doc.get("enabled_features", []),
         "allowed_environments": license_doc.get("allowed_environments", []),
         "allowed_aws_account_ids": license_doc.get("allowed_aws_account_ids", []),
-        "installation_id": license_doc.get("installation_id") or os.getenv("ENTERPRISE_INSTALLATION_ID", ""),
+        "installation_id": license_doc.get("installation_id")
+        or os.getenv("ENTERPRISE_INSTALLATION_ID", ""),
         "max_repos": license_doc.get("max_repos"),
         "max_builds_per_month": license_doc.get("max_builds_per_month"),
         "max_users": license_doc.get("max_users"),
@@ -465,7 +631,8 @@ def license_summary(license_doc: Dict[str, Any]) -> Dict[str, Any]:
         "grace_expires_at": license_doc.get("grace_expires_at"),
         "entitlement_status": license_doc.get("entitlement_status"),
         "validation_mode": license_doc.get("validation_mode", "unknown"),
-        "license_mode": license_doc.get("license_mode") or os.getenv("ENTERPRISE_LICENSE_MODE", "offline-file"),
+        "license_mode": license_doc.get("license_mode")
+        or os.getenv("ENTERPRISE_LICENSE_MODE", "offline-file"),
         "signature_algorithm": license_doc.get("signature_algorithm"),
         "signature_key_id": license_doc.get("signature_key_id"),
         "signature_mode": license_doc.get("signature_mode"),

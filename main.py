@@ -42,7 +42,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(root_path="/pipeline/api")
-app.include_router(release_trust_router, prefix="/pipeline/api")
+app.include_router(release_trust_router)
 
 Base.metadata.create_all(bind=engine)
 

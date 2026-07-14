@@ -35,8 +35,6 @@ from enterprise.licensing import (
 
 from routers.release_trust import router as release_trust_router
 
-app.include_router(release_trust_router, prefix="/pipeline/api")
-
 DATABASE_PATH = "/app/data/app.db"  # This path must match your Helm `mountPath`
 
 # Setup logging
@@ -44,6 +42,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(root_path="/pipeline/api")
+app.include_router(release_trust_router, prefix="/pipeline/api")
 
 Base.metadata.create_all(bind=engine)
 
@@ -104,6 +103,8 @@ ENVIRONMENT_IAM_MODE = os.getenv("ENVIRONMENT_IAM_MODE", "validation-only").stri
 ENVIRONMENT_EKS_ACCESS_MODE = os.getenv("ENVIRONMENT_EKS_ACCESS_MODE", "namespace-scoped").strip() or "namespace-scoped"
 RBAC_ENFORCEMENT_ENABLED = os.getenv("BACKEND_RBAC_ENFORCEMENT_ENABLED", "true").strip().lower() == "true"
 SESSION_TTL_SECONDS = int(os.getenv("BACKEND_SESSION_TTL_SECONDS", "43200"))
+LOCAL_DEV_AUTH = os.getenv("LOCAL_DEV_AUTH", "false").strip().lower() == "true"
+LOCAL_DEV_AUTH_ROLES = os.getenv("LOCAL_DEV_AUTH_ROLES", "platform-admin")
 
 def jenkins_headers(content_type: Optional[str] = None):
     headers = {}
@@ -2086,6 +2087,24 @@ async def login(request: Request):
     password = body.get("password")
     if not username or not password:
         return JSONResponse(status_code=400, content={"error": "Username and password required"})
+    if LOCAL_DEV_AUTH:
+        roles = normalize_roles(LOCAL_DEV_AUTH_ROLES.split(","))
+        principal = AuthPrincipal(
+            username=username,
+            email=f"{username}@local.dev",
+            full_name=username,
+            roles=roles,
+            groups=["local-dev"],
+        )
+        return {
+            "username": username,
+            "fullName": username,
+            "email": principal.email,
+            "roles": roles,
+            "groups": principal.groups,
+            "token": create_session_token(principal),
+            "sessionExpiresIn": SESSION_TTL_SECONDS,
+        }
     try:
         server = Server(LDAP_SERVER, get_info=ALL)
         search_conn = Connection(server, user=LDAP_USER, password=LDAP_PASSWORD, auto_bind=True)

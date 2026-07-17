@@ -9,7 +9,12 @@ from datetime import datetime
 import os
 import requests
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, NoRegionError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    NoCredentialsError,
+    NoRegionError,
+)
 from ldap3 import Server, Connection, ALL, SUBTREE
 from ldap3.utils.conv import escape_filter_chars
 import logging
@@ -35,15 +40,14 @@ from enterprise.licensing import (
 
 from routers.release_trust import router as release_trust_router
 
-app.include_router(release_trust_router, prefix="/pipeline/api")
-
-DATABASE_PATH = "/app/data/app.db"  # This path must match your Helm `mountPath`
+DATABASE_PATH = os.getenv("DATABASE_PATH", "/app/data/app.db")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(root_path="/pipeline/api")
+app.include_router(release_trust_router)
 
 Base.metadata.create_all(bind=engine)
 
@@ -53,7 +57,9 @@ def ensure_environment_catalog_schema() -> None:
     with engine.begin() as connection:
         columns = {
             row[1]
-            for row in connection.execute(text("PRAGMA table_info(environment_catalog)")).fetchall()
+            for row in connection.execute(
+                text("PRAGMA table_info(environment_catalog)")
+            ).fetchall()
         }
         additions = {
             "iam_validation_mode": "ALTER TABLE environment_catalog ADD COLUMN iam_validation_mode VARCHAR DEFAULT 'validation-only'",
@@ -72,7 +78,9 @@ def ensure_vulnerability_schema() -> None:
     with engine.begin() as connection:
         columns = {
             row[1]
-            for row in connection.execute(text("PRAGMA table_info(vulnerabilities)")).fetchall()
+            for row in connection.execute(
+                text("PRAGMA table_info(vulnerabilities)")
+            ).fetchall()
         }
         additions = {
             "policy_bundle": "ALTER TABLE vulnerabilities ADD COLUMN policy_bundle VARCHAR",
@@ -96,14 +104,37 @@ ensure_vulnerability_schema()
 JENKINS_URL = os.getenv("JENKINS_URL", "https://horizonrelevance.com/jenkins")
 JENKINS_USER = os.getenv("JENKINS_USER")
 JENKINS_TOKEN = os.getenv("JENKINS_TOKEN")
-JENKINS_EXECUTION_MODE = os.getenv("JENKINS_EXECUTION_MODE", "runner").strip().lower() or "runner"
-HORIZON_RUNNER_URL = os.getenv("HORIZON_RUNNER_URL", "http://horizon-runner:8080").strip() or "http://horizon-runner:8080"
+JENKINS_EXECUTION_MODE = (
+    os.getenv("JENKINS_EXECUTION_MODE", "runner").strip().lower() or "runner"
+)
+HORIZON_RUNNER_URL = (
+    os.getenv("HORIZON_RUNNER_URL", "http://horizon-runner:8080").strip()
+    or "http://horizon-runner:8080"
+)
 JENKINS_RUNTIME_ROLE_ARN = os.getenv("JENKINS_RUNTIME_ROLE_ARN", "").strip()
-ENVIRONMENT_PREFLIGHT_ENFORCED = os.getenv("ENVIRONMENT_PREFLIGHT_ENFORCED", "false").strip().lower() == "true"
-ENVIRONMENT_IAM_MODE = os.getenv("ENVIRONMENT_IAM_MODE", "validation-only").strip() or "validation-only"
-ENVIRONMENT_EKS_ACCESS_MODE = os.getenv("ENVIRONMENT_EKS_ACCESS_MODE", "namespace-scoped").strip() or "namespace-scoped"
-RBAC_ENFORCEMENT_ENABLED = os.getenv("BACKEND_RBAC_ENFORCEMENT_ENABLED", "true").strip().lower() == "true"
+ENVIRONMENT_PREFLIGHT_ENFORCED = (
+    os.getenv("ENVIRONMENT_PREFLIGHT_ENFORCED", "false").strip().lower() == "true"
+)
+ENVIRONMENT_IAM_MODE = (
+    os.getenv("ENVIRONMENT_IAM_MODE", "validation-only").strip() or "validation-only"
+)
+ENVIRONMENT_EKS_ACCESS_MODE = (
+    os.getenv("ENVIRONMENT_EKS_ACCESS_MODE", "namespace-scoped").strip()
+    or "namespace-scoped"
+)
+RBAC_ENFORCEMENT_ENABLED = (
+    os.getenv("BACKEND_RBAC_ENFORCEMENT_ENABLED", "true").strip().lower() == "true"
+)
 SESSION_TTL_SECONDS = int(os.getenv("BACKEND_SESSION_TTL_SECONDS", "43200"))
+LOCAL_DEV_AUTH_ENABLED = (
+    os.getenv("LOCAL_DEV_AUTH", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+)
+LOCAL_DEV_AUTH_ROLES = [
+    role.strip()
+    for role in os.getenv("LOCAL_DEV_AUTH_ROLES", "platform-admin").split(",")
+    if role.strip()
+]
+
 
 def jenkins_headers(content_type: Optional[str] = None):
     headers = {}
@@ -122,6 +153,7 @@ def jenkins_headers(content_type: Optional[str] = None):
     except Exception as exc:
         logger.warning("Unable to fetch Jenkins crumb: %s", exc)
     return headers
+
 
 def jenkins_post(url: str, content_type: Optional[str] = None, data=None, params=None):
     session = requests.Session()
@@ -150,16 +182,22 @@ def jenkins_post(url: str, content_type: Optional[str] = None, data=None, params
         timeout=60,
     )
 
-def trigger_jenkins_parameterized_build(job_name: str, values: Dict[str, Any]) -> requests.Response:
+
+def trigger_jenkins_parameterized_build(
+    job_name: str, values: Dict[str, Any]
+) -> requests.Response:
     return jenkins_post(
         f"{JENKINS_URL}/job/{job_name}/buildWithParameters",
         content_type="application/x-www-form-urlencoded",
         data=values,
     )
 
+
 def jenkins_failure_response(action: str, response: requests.Response):
     body = (response.text or "").strip()
-    logger.error("Jenkins %s failed with status %s: %s", action, response.status_code, body[:500])
+    logger.error(
+        "Jenkins %s failed with status %s: %s", action, response.status_code, body[:500]
+    )
     return JSONResponse(
         status_code=502,
         content={
@@ -169,21 +207,38 @@ def jenkins_failure_response(action: str, response: requests.Response):
         },
     )
 
+
 def groovy_string(value: Any) -> str:
-    return str(value or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return (
+        str(value or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    )
+
 
 def groovy_single_quoted(value: Any) -> str:
-    return str(value or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+    return (
+        str(value or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+    )
+
 
 def runner_bool_value(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
+
 def runner_pipeline_key(values: Dict[str, Any]) -> str:
-    return re.sub(r"[^A-Z0-9]+", "_", str(values.get("PIPELINE_KIND") or "").strip().upper()).strip("_")
+    return re.sub(
+        r"[^A-Z0-9]+", "_", str(values.get("PIPELINE_KIND") or "").strip().upper()
+    ).strip("_")
+
 
 def runner_stage_plan(values: Dict[str, Any]) -> List[Dict[str, Any]]:
     pipeline_key = runner_pipeline_key(values)
-    if pipeline_key in {"TEST", "VALIDATION", "VALIDATE", "TEST_DEVOPS", "TEST_DEVSECOPS"}:
+    if pipeline_key in {
+        "TEST",
+        "VALIDATION",
+        "VALIDATE",
+        "TEST_DEVOPS",
+        "TEST_DEVSECOPS",
+    }:
         stages = [{"key": "checkout", "name": "Checkout"}]
         validation_gates = [
             ("ENABLE_SELENIUM", "ui-test", "UI End-to-End Test"),
@@ -199,7 +254,9 @@ def runner_stage_plan(values: Dict[str, Any]) -> List[Dict[str, Any]]:
             for flag, stage_key, stage_name in validation_gates
             if runner_bool_value(values.get(flag))
         )
-        stages.append({"key": "validation-results", "name": "Publish Validation Results"})
+        stages.append(
+            {"key": "validation-results", "name": "Publish Validation Results"}
+        )
         return stages
 
     return [
@@ -210,7 +267,10 @@ def runner_stage_plan(values: Dict[str, Any]) -> List[Dict[str, Any]]:
         {"key": "deploy", "name": "Deploy"},
     ]
 
-def build_parameter_definitions(values: Dict[str, Any], bool_param_names: List[str]) -> str:
+
+def build_parameter_definitions(
+    values: Dict[str, Any], bool_param_names: List[str]
+) -> str:
     definitions = []
     bool_params = set(bool_param_names)
     for name, value in values.items():
@@ -231,6 +291,7 @@ def build_parameter_definitions(values: Dict[str, Any], bool_param_names: List[s
           <description>{name}</description>
         </hudson.model.StringParameterDefinition>""")
     return "".join(definitions)
+
 
 def build_runner_job_config(
     *,
@@ -395,9 +456,11 @@ pipeline {{
 </flow-definition>
 """
 
+
 # GitHub webhook secret
 GITHUB_WEBHOOK_SECRET = os.environ["GITHUB_WEBHOOK_SECRET"]
 SESSION_SIGNING_SECRET = os.getenv("BACKEND_SESSION_SECRET", GITHUB_WEBHOOK_SECRET)
+
 
 def aws_account_id_from_registry(registry: Optional[str]) -> Optional[str]:
     if not registry:
@@ -405,11 +468,16 @@ def aws_account_id_from_registry(registry: Optional[str]) -> Optional[str]:
     registry_value = registry.strip()
     if re.fullmatch(r"[0-9]{12}", registry_value):
         return registry_value
-    match = re.search(r"([0-9]{12})\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com", registry_value)
+    match = re.search(
+        r"([0-9]{12})\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com", registry_value
+    )
     return match.group(1) if match else None
 
+
 # LDAP configuration
-LDAP_SERVER = os.getenv("LDAP_SERVER", "ldap://openldap.horizon-relevance-dev.svc.cluster.local:389")
+LDAP_SERVER = os.getenv(
+    "LDAP_SERVER", "ldap://openldap.horizon-relevance-dev.svc.cluster.local:389"
+)
 LDAP_USER = os.getenv("LDAP_USER", "cn=admin,dc=horizonrelevance,dc=local")
 LDAP_PASSWORD = os.getenv("LDAP_MANAGER_PASSWORD")
 LDAP_BASE_DN = os.getenv("LDAP_BASE_DN", "ou=users,dc=horizonrelevance,dc=local")
@@ -417,24 +485,40 @@ SEARCH_FILTER = os.getenv("LDAP_SEARCH_FILTER", "(objectClass=inetOrgPerson)")
 LDAP_UID_ATTRIBUTE = os.getenv("LDAP_UID_ATTRIBUTE", "uid")
 LDAP_DISPLAY_NAME_ATTRIBUTE = os.getenv("LDAP_DISPLAY_NAME_ATTRIBUTE", "displayName")
 LDAP_MAIL_ATTRIBUTE = os.getenv("LDAP_MAIL_ATTRIBUTE", "mail")
-LDAP_GROUP_BASE_DN = os.getenv("LDAP_GROUP_BASE_DN", "ou=groups,dc=horizonrelevance,dc=local")
-LDAP_GROUP_SEARCH_FILTER = os.getenv("LDAP_GROUP_SEARCH_FILTER", "(objectClass=groupOfNames)")
+LDAP_GROUP_BASE_DN = os.getenv(
+    "LDAP_GROUP_BASE_DN", "ou=groups,dc=horizonrelevance,dc=local"
+)
+LDAP_GROUP_SEARCH_FILTER = os.getenv(
+    "LDAP_GROUP_SEARCH_FILTER", "(objectClass=groupOfNames)"
+)
 LDAP_GROUP_MEMBER_ATTRIBUTE = os.getenv("LDAP_GROUP_MEMBER_ATTRIBUTE", "member")
 LDAP_GROUP_NAME_ATTRIBUTE = os.getenv("LDAP_GROUP_NAME_ATTRIBUTE", "cn")
 LDAP_USER_GROUP_ATTRIBUTE = os.getenv("LDAP_USER_GROUP_ATTRIBUTE", "memberOf")
 LDAP_ROLE_GROUP_MAPPINGS_RAW = os.getenv("LDAP_ROLE_GROUP_MAPPINGS", "{}")
 RBAC_BOOTSTRAP_PLATFORM_ADMINS_RAW = os.getenv("RBAC_BOOTSTRAP_PLATFORM_ADMINS", "")
 RBAC_BOOTSTRAP_ROLE_GRANTS_RAW = os.getenv("RBAC_BOOTSTRAP_ROLE_GRANTS", "{}")
-ENVIRONMENT_CATALOG_FILE = os.getenv("ENVIRONMENT_CATALOG_FILE", "/app/config/environment-catalog.json")
+ENVIRONMENT_CATALOG_FILE = os.getenv(
+    "ENVIRONMENT_CATALOG_FILE", "/app/config/environment-catalog.json"
+)
 
 # CORS setup for frontend
+BACKEND_CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "BACKEND_CORS_ORIGINS",
+        "https://horizonrelevance.com/pipeline,http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://horizonrelevance.com/pipeline"],
+    allow_origins=BACKEND_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Dependency for database session
 def get_db():
@@ -443,6 +527,7 @@ def get_db():
         yield db
     finally:
         db.close()
+
 
 class PipelineRequest(BaseModel):
     project_name: str
@@ -453,6 +538,7 @@ class PipelineRequest(BaseModel):
     ENABLE_OPA: bool
     ENABLE_TRIVY: bool
     requestedBy: str
+
 
 class DevopsPipelineRequest(BaseModel):
     requestedBy: str
@@ -504,6 +590,7 @@ class DevopsPipelineRequest(BaseModel):
     prod_namespace: Optional[str] = None
     enable_notifications: bool = False
     sns_topic_arn: Optional[str] = None
+
 
 class TestDevopsPipelineRequest(BaseModel):
     requestedBy: str
@@ -560,6 +647,7 @@ class TestDevopsPipelineRequest(BaseModel):
     enable_notifications: bool = False
     sns_topic_arn: Optional[str] = None
 
+
 class ProdDevopsPipelineRequest(BaseModel):
     requestedBy: str
     client_id: Optional[str] = None
@@ -609,6 +697,7 @@ class ProdDevopsPipelineRequest(BaseModel):
     enable_notifications: bool = False
     sns_topic_arn: Optional[str] = None
 
+
 class LicenseValidationRequest(BaseModel):
     client_id: Optional[str] = None
     client_name: Optional[str] = None
@@ -625,8 +714,10 @@ class LicenseValidationRequest(BaseModel):
     target_env: str = "EKS-NONPROD"
     requested_features: List[str] = []
 
+
 class LicenseSyncRequest(BaseModel):
     force: Optional[bool] = False
+
 
 class LicenseUpgradeRequest(BaseModel):
     requested_plan_code: Optional[str] = "enterprise-annual"
@@ -638,6 +729,7 @@ class LicenseUpgradeRequest(BaseModel):
     requester_email: Optional[str] = None
     message: Optional[str] = ""
     metadata: Optional[Dict[str, Any]] = None
+
 
 class EnvironmentCatalogEntryRequest(BaseModel):
     name: str
@@ -660,16 +752,20 @@ class EnvironmentCatalogEntryRequest(BaseModel):
     sns_topic_arn: Optional[str] = None
     is_active: bool = True
 
+
 class EnvironmentCatalogRequest(BaseModel):
     environments: List[EnvironmentCatalogEntryRequest]
+
 
 class EnvironmentPreflightRequest(BaseModel):
     project_name: str = "application"
     pipeline_kind: str = "DEVOPS"
     source_env: Optional[str] = None
 
+
 class TriggerRequest(BaseModel):
     project_name: str
+
 
 class VulnerabilityModel(BaseModel):
     target: str
@@ -699,26 +795,30 @@ class VulnerabilityModel(BaseModel):
     waiver_approved_by: Optional[str] = None
     evidence_uri: Optional[str] = None
 
+
 class VulnerabilityUpload(BaseModel):
     vulnerabilities: List[VulnerabilityModel]
+
 
 class OPARiskModel(BaseModel):
     target: str
     violation: str
     severity: str
     risk_score: float
-    package_name: Optional[str] = "OPA Policy"       
-    installed_version: Optional[str] = "N/A"  
-    source: Optional[str] = "Policy Violation"    
+    package_name: Optional[str] = "OPA Policy"
+    installed_version: Optional[str] = "N/A"
+    source: Optional[str] = "Policy Violation"
     description: Optional[str] = ""
     remediation: Optional[str] = ""
     jenkins_job: Optional[str] = None
     build_number: Optional[int] = None
     jenkins_url: Optional[str] = None
 
+
 class OPARiskUpload(BaseModel):
     application: str
     risks: List[OPARiskModel]
+
 
 class UploadPayload(BaseModel):
     application: str
@@ -729,16 +829,19 @@ class UploadPayload(BaseModel):
     build_number: int
     vulnerabilities: List[VulnerabilityModel]
 
+
 class RegisterAppRequest(BaseModel):
     name: str
     description: Optional[str] = None
     owner_email: str
-    repo_url: str 
+    repo_url: str
     branch: str = "main"
+
 
 class GrantAccessRequest(BaseModel):
     user_email: str
-    application: str    
+    application: str
+
 
 class AuthPrincipal(BaseModel):
     username: str
@@ -746,6 +849,7 @@ class AuthPrincipal(BaseModel):
     full_name: str = ""
     roles: List[str] = []
     groups: List[str] = []
+
 
 ROLE_PLATFORM_ADMIN = "platform-admin"
 ROLE_DEVELOPER = "developer"
@@ -755,7 +859,12 @@ ROLE_VIEWER = "viewer"
 
 CATALOG_ADMIN_ROLES = {ROLE_PLATFORM_ADMIN}
 PIPELINE_BUILD_ROLES = {ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER}
-PIPELINE_VALIDATE_ROLES = {ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER, ROLE_QA, ROLE_RELEASE_MANAGER}
+PIPELINE_VALIDATE_ROLES = {
+    ROLE_PLATFORM_ADMIN,
+    ROLE_DEVELOPER,
+    ROLE_QA,
+    ROLE_RELEASE_MANAGER,
+}
 PIPELINE_RELEASE_ROLES = {ROLE_PLATFORM_ADMIN, ROLE_RELEASE_MANAGER}
 SECURITY_READ_ALL_ROLES = {ROLE_PLATFORM_ADMIN, ROLE_QA, ROLE_RELEASE_MANAGER}
 
@@ -767,11 +876,14 @@ ROLE_ENV_PERMISSIONS = {
     ROLE_VIEWER: set(),
 }
 
+
 def normalize_role_name(role: str) -> str:
     return str(role or "").strip().lower()
 
+
 def normalize_identity(value: str) -> str:
     return str(value or "").strip().lower()
+
 
 def parse_identity_list(raw: Any) -> set[str]:
     if not raw:
@@ -783,6 +895,7 @@ def parse_identity_list(raw: Any) -> set[str]:
     else:
         return set()
     return {normalize_identity(value) for value in values if normalize_identity(value)}
+
 
 def parse_bootstrap_role_grants(raw: str) -> Dict[str, set[str]]:
     grants: Dict[str, set[str]] = {}
@@ -797,7 +910,11 @@ def parse_bootstrap_role_grants(raw: str) -> Dict[str, set[str]]:
     if isinstance(payload, dict):
         iterable = payload.items()
     elif isinstance(payload, list):
-        iterable = ((item.get("role"), item.get("users")) for item in payload if isinstance(item, dict))
+        iterable = (
+            (item.get("role"), item.get("users"))
+            for item in payload
+            if isinstance(item, dict)
+        )
     else:
         return grants
 
@@ -810,10 +927,13 @@ def parse_bootstrap_role_grants(raw: str) -> Dict[str, set[str]]:
             grants.setdefault(role_name, set()).update(identities)
     return grants
 
+
 BOOTSTRAP_ROLE_GRANTS = parse_bootstrap_role_grants(RBAC_BOOTSTRAP_ROLE_GRANTS_RAW)
 BOOTSTRAP_PLATFORM_ADMINS = parse_identity_list(RBAC_BOOTSTRAP_PLATFORM_ADMINS_RAW)
 if BOOTSTRAP_PLATFORM_ADMINS:
-    BOOTSTRAP_ROLE_GRANTS.setdefault(ROLE_PLATFORM_ADMIN, set()).update(BOOTSTRAP_PLATFORM_ADMINS)
+    BOOTSTRAP_ROLE_GRANTS.setdefault(ROLE_PLATFORM_ADMIN, set()).update(
+        BOOTSTRAP_PLATFORM_ADMINS
+    )
 
 PUBLIC_CATALOG_FIELDS = {
     "name",
@@ -826,11 +946,21 @@ PUBLIC_CATALOG_FIELDS = {
     "updated_at",
 }
 
+
 def normalize_roles(roles: Optional[List[str]]) -> List[str]:
-    normalized = sorted({normalize_role_name(role) for role in (roles or []) if normalize_role_name(role)})
+    normalized = sorted(
+        {
+            normalize_role_name(role)
+            for role in (roles or [])
+            if normalize_role_name(role)
+        }
+    )
     return normalized or [ROLE_VIEWER]
 
-def apply_bootstrap_role_grants(username: str, email: str, roles: Optional[List[str]]) -> List[str]:
+
+def apply_bootstrap_role_grants(
+    username: str, email: str, roles: Optional[List[str]]
+) -> List[str]:
     if not BOOTSTRAP_ROLE_GRANTS:
         return normalize_roles(roles)
     identities = {normalize_identity(username), normalize_identity(email)}
@@ -840,8 +970,10 @@ def apply_bootstrap_role_grants(username: str, email: str, roles: Optional[List[
             granted_roles.add(role)
     return normalize_roles(list(granted_roles))
 
+
 def principal_has_role(principal: AuthPrincipal, allowed_roles: set[str]) -> bool:
     return bool(set(normalize_roles(principal.roles)).intersection(allowed_roles))
+
 
 def principal_can_use_environment(principal: AuthPrincipal, target_env: str) -> bool:
     env = normalize_environment_name(target_env)
@@ -850,16 +982,20 @@ def principal_can_use_environment(principal: AuthPrincipal, target_env: str) -> 
             return True
     return False
 
+
 def principal_can_view_all_findings(principal: AuthPrincipal) -> bool:
     return principal_has_role(principal, SECURITY_READ_ALL_ROLES)
 
+
 def _b64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
 
 def _b64url_decode(value: str) -> bytes:
     normalized = value.encode("utf-8")
     normalized += b"=" * (-len(normalized) % 4)
     return base64.urlsafe_b64decode(normalized)
+
 
 def create_session_token(principal: AuthPrincipal) -> str:
     now = int(time.time())
@@ -872,15 +1008,24 @@ def create_session_token(principal: AuthPrincipal) -> str:
         "iat": now,
         "exp": now + SESSION_TTL_SECONDS,
     }
-    payload = _b64url_encode(json.dumps(claims, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-    signature = hmac.new(SESSION_SIGNING_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    payload = _b64url_encode(
+        json.dumps(claims, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    signature = hmac.new(
+        SESSION_SIGNING_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).digest()
     return f"{payload}.{_b64url_encode(signature)}"
+
 
 def decode_session_token(token: str) -> AuthPrincipal:
     try:
         payload, signature = token.split(".", 1)
         expected_signature = _b64url_encode(
-            hmac.new(SESSION_SIGNING_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+            hmac.new(
+                SESSION_SIGNING_SECRET.encode("utf-8"),
+                payload.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
         )
         if not hmac.compare_digest(signature, expected_signature):
             raise ValueError("invalid signature")
@@ -895,22 +1040,44 @@ def decode_session_token(token: str) -> AuthPrincipal:
             groups=claims.get("groups") or [],
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session token.") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session token.",
+        ) from exc
+
 
 def get_current_principal(authorization: Optional[str] = Header(None)) -> AuthPrincipal:
+    if LOCAL_DEV_AUTH_ENABLED and (
+        not authorization or not authorization.lower().startswith("bearer ")
+    ):
+        return AuthPrincipal(
+            username="local-dev",
+            email="local-dev@horizonrelevance.com",
+            full_name="Local Dev",
+            roles=normalize_roles(LOCAL_DEV_AUTH_ROLES),
+        )
     if not RBAC_ENFORCEMENT_ENABLED:
-        return AuthPrincipal(username="system", email="", full_name="System", roles=[ROLE_PLATFORM_ADMIN])
+        return AuthPrincipal(
+            username="system", email="", full_name="System", roles=[ROLE_PLATFORM_ADMIN]
+        )
     if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required."
+        )
     token = authorization.split(" ", 1)[1].strip()
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required."
+        )
     return decode_session_token(token)
+
 
 def require_roles(*allowed_roles: str):
     allowed = {normalize_role_name(role) for role in allowed_roles}
 
-    def dependency(principal: AuthPrincipal = Depends(get_current_principal)) -> AuthPrincipal:
+    def dependency(
+        principal: AuthPrincipal = Depends(get_current_principal),
+    ) -> AuthPrincipal:
         if not principal_has_role(principal, allowed):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -920,27 +1087,38 @@ def require_roles(*allowed_roles: str):
 
     return dependency
 
-def require_environment_permission(principal: AuthPrincipal, target_env: str, action: str) -> None:
+
+def require_environment_permission(
+    principal: AuthPrincipal, target_env: str, action: str
+) -> None:
     if not principal_can_use_environment(principal, target_env):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"{action} is not allowed for environment {normalize_environment_name(target_env)} with current roles.",
         )
 
+
 def principal_email(principal: AuthPrincipal) -> str:
     return principal.email or f"{principal.username}@local"
 
-def sanitize_catalog_entry_for_principal(entry: Dict[str, Any], principal: AuthPrincipal) -> Dict[str, Any]:
+
+def sanitize_catalog_entry_for_principal(
+    entry: Dict[str, Any], principal: AuthPrincipal
+) -> Dict[str, Any]:
     if principal_has_role(principal, CATALOG_ADMIN_ROLES):
         return entry
     return {key: value for key, value in entry.items() if key in PUBLIC_CATALOG_FIELDS}
 
-def sanitize_preflight_for_principal(preflight: Dict[str, Any], principal: AuthPrincipal) -> Dict[str, Any]:
+
+def sanitize_preflight_for_principal(
+    preflight: Dict[str, Any], principal: AuthPrincipal
+) -> Dict[str, Any]:
     if principal_has_role(principal, CATALOG_ADMIN_ROLES):
         return preflight
     sanitized = dict(preflight)
     sanitized.pop("resolved", None)
     return sanitized
+
 
 def ensure_application_registered(
     db: Session,
@@ -974,22 +1152,32 @@ def ensure_application_registered(
         db.commit()
         db.refresh(app_entry)
 
-    existing_access = db.query(ApplicationUserAccess).filter_by(
-        user_email=owner_email,
-        application_id=app_entry.id,
-    ).first()
+    existing_access = (
+        db.query(ApplicationUserAccess)
+        .filter_by(
+            user_email=owner_email,
+            application_id=app_entry.id,
+        )
+        .first()
+    )
     if not existing_access:
-        db.add(ApplicationUserAccess(user_email=owner_email, application_id=app_entry.id))
+        db.add(
+            ApplicationUserAccess(user_email=owner_email, application_id=app_entry.id)
+        )
         db.commit()
     return app_entry
+
 
 def application_ids_for_principal(db: Session, principal: AuthPrincipal) -> List[int]:
     if principal_can_view_all_findings(principal):
         return [row.id for row in db.query(Application.id).all()]
     email = principal_email(principal)
-    rows = db.query(ApplicationUserAccess.application_id).filter_by(user_email=email).all()
+    rows = (
+        db.query(ApplicationUserAccess.application_id).filter_by(user_email=email).all()
+    )
     owned = db.query(Application.id).filter_by(owner_email=email).all()
     return sorted({row.application_id for row in rows}.union({row.id for row in owned}))
+
 
 def authorized_vulnerability_query(db: Session, principal: AuthPrincipal):
     if principal_can_view_all_findings(principal):
@@ -999,6 +1187,7 @@ def authorized_vulnerability_query(db: Session, principal: AuthPrincipal):
         return db.query(Vulnerability).filter(False)
     return db.query(Vulnerability).filter(Vulnerability.application_id.in_(allowed_ids))
 
+
 def requested_devops_features(request: DevopsPipelineRequest) -> List[str]:
     features = ["build", "artifact_publish"]
     if request.ENABLE_SONARQUBE:
@@ -1007,13 +1196,19 @@ def requested_devops_features(request: DevopsPipelineRequest) -> List[str]:
         features.append("image_scan")
     if request.ENABLE_CHECKMARX:
         features.append("static_application_security")
-    if request.ENABLE_SOAPUI or request.ENABLE_JMETER or request.ENABLE_SELENIUM or request.ENABLE_NEWMAN:
+    if (
+        request.ENABLE_SOAPUI
+        or request.ENABLE_JMETER
+        or request.ENABLE_SELENIUM
+        or request.ENABLE_NEWMAN
+    ):
         features.append("test_suites")
     if "PROD" in (request.target_env or "").upper():
         features.append("prod_deploy")
     if request.enable_notifications:
         features.append("notifications")
     return features
+
 
 def requested_test_devops_features(request: TestDevopsPipelineRequest) -> List[str]:
     features = []
@@ -1031,6 +1226,7 @@ def requested_test_devops_features(request: TestDevopsPipelineRequest) -> List[s
         features.append("notifications")
     return features
 
+
 def requested_prod_devops_features(request: ProdDevopsPipelineRequest) -> List[str]:
     features = ["artifact_publish", "prod_deploy"]
     if request.secret_enabled:
@@ -1039,10 +1235,12 @@ def requested_prod_devops_features(request: ProdDevopsPipelineRequest) -> List[s
         features.append("notifications")
     return features
 
+
 ENVIRONMENT_ALIASES = {
     "EKS-NONPROD": "DEV",
     "EKS-PROD": "PROD",
 }
+
 
 def parse_ldap_role_group_mappings(raw: str) -> Dict[str, set]:
     if not raw:
@@ -1057,7 +1255,11 @@ def parse_ldap_role_group_mappings(raw: str) -> Dict[str, set]:
     if isinstance(payload, dict):
         iterable = payload.items()
     elif isinstance(payload, list):
-        iterable = ((item.get("role"), item.get("groups")) for item in payload if isinstance(item, dict))
+        iterable = (
+            (item.get("role"), item.get("groups"))
+            for item in payload
+            if isinstance(item, dict)
+        )
     else:
         return {}
 
@@ -1069,7 +1271,9 @@ def parse_ldap_role_group_mappings(raw: str) -> Dict[str, set]:
             groups = [groups]
         if not isinstance(groups, list):
             continue
-        normalized[role_name] = {str(group).strip().lower() for group in groups if str(group).strip()}
+        normalized[role_name] = {
+            str(group).strip().lower() for group in groups if str(group).strip()
+        }
     return normalized
 
 
@@ -1092,11 +1296,15 @@ def ldap_entry_values(entry, attribute: str) -> List[str]:
 
 def render_ldap_group_search_filter(user_dn: str) -> str:
     escaped_user_dn = escape_filter_chars(user_dn)
-    configured_filter = (LDAP_GROUP_SEARCH_FILTER or "(objectClass=groupOfNames)").strip()
-    if any(token in configured_filter for token in ("{user_dn}", "{user_dn_escaped}", "{0}")):
+    configured_filter = (
+        LDAP_GROUP_SEARCH_FILTER or "(objectClass=groupOfNames)"
+    ).strip()
+    if any(
+        token in configured_filter
+        for token in ("{user_dn}", "{user_dn_escaped}", "{0}")
+    ):
         return (
-            configured_filter
-            .replace("{user_dn_escaped}", escaped_user_dn)
+            configured_filter.replace("{user_dn_escaped}", escaped_user_dn)
             .replace("{user_dn}", escaped_user_dn)
             .replace("{0}", escaped_user_dn)
         )
@@ -1130,11 +1338,16 @@ def resolve_ldap_groups(search_conn: Connection, user_entry, user_dn: str) -> Li
 
 
 def resolve_roles_from_ldap_groups(groups: List[str]) -> List[str]:
-    normalized_groups = {str(group).strip().lower() for group in groups if str(group).strip()}
-    roles = sorted([
-        role for role, allowed_groups in LDAP_ROLE_GROUP_MAPPINGS.items()
-        if normalized_groups.intersection(allowed_groups)
-    ])
+    normalized_groups = {
+        str(group).strip().lower() for group in groups if str(group).strip()
+    }
+    roles = sorted(
+        [
+            role
+            for role, allowed_groups in LDAP_ROLE_GROUP_MAPPINGS.items()
+            if normalized_groups.intersection(allowed_groups)
+        ]
+    )
     return roles or ["viewer"]
 
 
@@ -1148,7 +1361,9 @@ def slugify_value(value: str) -> str:
     return (slug or "application").lower()
 
 
-def render_catalog_template(value: Optional[str], project_name: str, client_id: str, env: str) -> str:
+def render_catalog_template(
+    value: Optional[str], project_name: str, client_id: str, env: str
+) -> str:
     if not value:
         return ""
     project_slug = slugify_value(project_name)
@@ -1177,7 +1392,8 @@ def catalog_entry_to_dict(entry: EnvironmentCatalog) -> Dict[str, Any]:
         "target_aws_role_arn": entry.target_aws_role_arn or "",
         "cluster_name": entry.cluster_name or "",
         "namespace_strategy": entry.namespace_strategy or "auto",
-        "namespace_template": entry.namespace_template or "{client_id}-{project_name}-{env}",
+        "namespace_template": entry.namespace_template
+        or "{client_id}-{project_name}-{env}",
         "iam_validation_mode": entry.iam_validation_mode or ENVIRONMENT_IAM_MODE,
         "eks_access_mode": entry.eks_access_mode or ENVIRONMENT_EKS_ACCESS_MODE,
         "sns_topic_arn": entry.sns_topic_arn or "",
@@ -1195,16 +1411,44 @@ def load_environment_catalog_seed() -> List[Dict[str, Any]]:
         if isinstance(payload, dict):
             return payload.get("environments") or []
     return [
-        {"name": "DEV", "display_name": "Development", "account_tier": "nonprod", "iam_validation_mode": ENVIRONMENT_IAM_MODE, "eks_access_mode": ENVIRONMENT_EKS_ACCESS_MODE},
-        {"name": "QA", "display_name": "Quality Assurance", "account_tier": "nonprod", "iam_validation_mode": ENVIRONMENT_IAM_MODE, "eks_access_mode": ENVIRONMENT_EKS_ACCESS_MODE},
-        {"name": "STAGE", "display_name": "Stage", "account_tier": "nonprod", "iam_validation_mode": ENVIRONMENT_IAM_MODE, "eks_access_mode": ENVIRONMENT_EKS_ACCESS_MODE},
-        {"name": "PROD", "display_name": "Production", "account_tier": "prod", "iam_validation_mode": ENVIRONMENT_IAM_MODE, "eks_access_mode": ENVIRONMENT_EKS_ACCESS_MODE},
+        {
+            "name": "DEV",
+            "display_name": "Development",
+            "account_tier": "nonprod",
+            "iam_validation_mode": ENVIRONMENT_IAM_MODE,
+            "eks_access_mode": ENVIRONMENT_EKS_ACCESS_MODE,
+        },
+        {
+            "name": "QA",
+            "display_name": "Quality Assurance",
+            "account_tier": "nonprod",
+            "iam_validation_mode": ENVIRONMENT_IAM_MODE,
+            "eks_access_mode": ENVIRONMENT_EKS_ACCESS_MODE,
+        },
+        {
+            "name": "STAGE",
+            "display_name": "Stage",
+            "account_tier": "nonprod",
+            "iam_validation_mode": ENVIRONMENT_IAM_MODE,
+            "eks_access_mode": ENVIRONMENT_EKS_ACCESS_MODE,
+        },
+        {
+            "name": "PROD",
+            "display_name": "Production",
+            "account_tier": "prod",
+            "iam_validation_mode": ENVIRONMENT_IAM_MODE,
+            "eks_access_mode": ENVIRONMENT_EKS_ACCESS_MODE,
+        },
     ]
 
 
-def upsert_environment_catalog_entry(db: Session, raw: Dict[str, Any]) -> EnvironmentCatalog:
+def upsert_environment_catalog_entry(
+    db: Session, raw: Dict[str, Any]
+) -> EnvironmentCatalog:
     env_name = normalize_environment_name(raw.get("name"))
-    entry = db.query(EnvironmentCatalog).filter(EnvironmentCatalog.name == env_name).first()
+    entry = (
+        db.query(EnvironmentCatalog).filter(EnvironmentCatalog.name == env_name).first()
+    )
     if not entry:
         entry = EnvironmentCatalog(name=env_name)
         db.add(entry)
@@ -1228,10 +1472,23 @@ def upsert_environment_catalog_entry(db: Session, raw: Dict[str, Any]) -> Enviro
         "sns_topic_arn": ["snsTopicArn"],
     }
     allowed_fields = [
-        "display_name", "account_tier", "aws_account_id", "aws_region", "ecr_registry",
-        "ecr_repository_template", "artifact_bucket", "client_aws_role_arn", "nonprod_aws_role_arn",
-        "source_aws_role_arn", "target_aws_role_arn", "cluster_name", "namespace_strategy",
-        "namespace_template", "iam_validation_mode", "eks_access_mode", "sns_topic_arn",
+        "display_name",
+        "account_tier",
+        "aws_account_id",
+        "aws_region",
+        "ecr_registry",
+        "ecr_repository_template",
+        "artifact_bucket",
+        "client_aws_role_arn",
+        "nonprod_aws_role_arn",
+        "source_aws_role_arn",
+        "target_aws_role_arn",
+        "cluster_name",
+        "namespace_strategy",
+        "namespace_template",
+        "iam_validation_mode",
+        "eks_access_mode",
+        "sns_topic_arn",
     ]
     for field in allowed_fields:
         value = raw.get(field)
@@ -1256,12 +1513,21 @@ def ensure_environment_catalog_seeded(db: Session) -> None:
     db.commit()
 
 
-def resolve_environment_catalog_values(db: Session, target_env: str, project_name: str, request: Optional[BaseModel] = None):
+def resolve_environment_catalog_values(
+    db: Session, target_env: str, project_name: str, request: Optional[BaseModel] = None
+):
     env = normalize_environment_name(target_env)
     ensure_environment_catalog_seeded(db)
-    entry = db.query(EnvironmentCatalog).filter(EnvironmentCatalog.name == env, EnvironmentCatalog.is_active == 1).first()
+    entry = (
+        db.query(EnvironmentCatalog)
+        .filter(EnvironmentCatalog.name == env, EnvironmentCatalog.is_active == 1)
+        .first()
+    )
     if not entry:
-        return None, f"Environment catalog entry '{env}' is not configured or inactive. Ask a platform admin to configure Environment Catalog."
+        return (
+            None,
+            f"Environment catalog entry '{env}' is not configured or inactive. Ask a platform admin to configure Environment Catalog.",
+        )
 
     catalog = catalog_entry_to_dict(entry)
     request_values = request.dict() if request else {}
@@ -1275,15 +1541,27 @@ def resolve_environment_catalog_values(db: Session, target_env: str, project_nam
         return catalog_value or request_value(name) or fallback
 
     license_doc = merge_request_license(request_values)
-    client_id = str(license_doc.get("client_id") or request_value("client_id") or "client").strip()
+    client_id = str(
+        license_doc.get("client_id") or request_value("client_id") or "client"
+    ).strip()
     repository_template = resolved("ecr_repository_template", "{project_name}")
-    namespace_template = resolved("namespace_template", "{client_id}-{project_name}-{env}")
-    namespace_strategy = resolved("namespace_strategy", request_value("namespace_strategy") or "auto")
+    namespace_template = resolved(
+        "namespace_template", "{client_id}-{project_name}-{env}"
+    )
+    namespace_strategy = resolved(
+        "namespace_strategy", request_value("namespace_strategy") or "auto"
+    )
     iam_validation_mode = resolved("iam_validation_mode", ENVIRONMENT_IAM_MODE)
     eks_access_mode = resolved("eks_access_mode", ENVIRONMENT_EKS_ACCESS_MODE)
     manual_namespace = request_value("app_namespace")
-    namespace = manual_namespace if namespace_strategy == "manual" and manual_namespace else render_catalog_template(namespace_template, project_name, client_id, env)
-    cluster_name = resolved("cluster_name", request_value(f"{env.lower()}_cluster_name"))
+    namespace = (
+        manual_namespace
+        if namespace_strategy == "manual" and manual_namespace
+        else render_catalog_template(namespace_template, project_name, client_id, env)
+    )
+    cluster_name = resolved(
+        "cluster_name", request_value(f"{env.lower()}_cluster_name")
+    )
     client_role = resolved("client_aws_role_arn")
     nonprod_role = resolved("nonprod_aws_role_arn", client_role)
     source_role = resolved("source_aws_role_arn", nonprod_role or client_role)
@@ -1299,9 +1577,13 @@ def resolve_environment_catalog_values(db: Session, target_env: str, project_nam
     return {
         "TARGET_ENV": env,
         "AWS_REGION": resolved("aws_region", "us-east-1"),
-        "AWS_ACCOUNT_ID": resolved("aws_account_id", aws_account_id_from_registry(ecr_registry) or ""),
+        "AWS_ACCOUNT_ID": resolved(
+            "aws_account_id", aws_account_id_from_registry(ecr_registry) or ""
+        ),
         "ECR_REGISTRY": ecr_registry,
-        "ECR_REPOSITORY": render_catalog_template(repository_template, project_name, client_id, env),
+        "ECR_REPOSITORY": render_catalog_template(
+            repository_template, project_name, client_id, env
+        ),
         "ARTIFACT_BUCKET": resolved("artifact_bucket"),
         "CLIENT_AWS_ROLE_ARN": client_role,
         "NONPROD_AWS_ROLE_ARN": nonprod_role,
@@ -1360,7 +1642,9 @@ def preflight_check(
 
 
 def summarize_preflight(checks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    blocking = [check for check in checks if check["required"] and check["status"] == "FAIL"]
+    blocking = [
+        check for check in checks if check["required"] and check["status"] == "FAIL"
+    ]
     warnings = [check for check in checks if check["status"] == "WARN"]
     if blocking:
         return {"ready": False, "status": "not_ready"}
@@ -1392,17 +1676,21 @@ def run_environment_preflight(
     request: Optional[BaseModel] = None,
     pipeline_kind: str = "DEVOPS",
 ) -> Dict[str, Any]:
-    env_values, env_error = resolve_environment_catalog_values(db, target_env, project_name, request)
+    env_values, env_error = resolve_environment_catalog_values(
+        db, target_env, project_name, request
+    )
     checks: List[Dict[str, Any]] = []
     env = normalize_environment_name(target_env)
 
     if env_error:
-        checks.append(preflight_check(
-            "Environment catalog",
-            "FAIL",
-            env_error,
-            remediation="A platform admin must save this environment in Environment Catalog before developers can run pipelines.",
-        ))
+        checks.append(
+            preflight_check(
+                "Environment catalog",
+                "FAIL",
+                env_error,
+                remediation="A platform admin must save this environment in Environment Catalog before developers can run pipelines.",
+            )
+        )
         summary = summarize_preflight(checks)
         return {
             **summary,
@@ -1441,22 +1729,38 @@ def run_environment_preflight(
         required_fields["ECR registry"] = ecr_registry
         required_fields["ECR repository"] = ecr_repository
 
-    missing = [label for label, value in required_fields.items() if not str(value or "").strip()]
-    checks.append(preflight_check(
-        "Required catalog fields",
-        "FAIL" if missing else "PASS",
-        "Missing required fields: " + ", ".join(missing) if missing else "All required deployable environment fields are present.",
-        remediation="Update Environment Catalog or installer client-values.yaml with the missing fields.",
-        details={"missing": missing},
-    ))
+    missing = [
+        label
+        for label, value in required_fields.items()
+        if not str(value or "").strip()
+    ]
+    checks.append(
+        preflight_check(
+            "Required catalog fields",
+            "FAIL" if missing else "PASS",
+            (
+                "Missing required fields: " + ", ".join(missing)
+                if missing
+                else "All required deployable environment fields are present."
+            ),
+            remediation="Update Environment Catalog or installer client-values.yaml with the missing fields.",
+            details={"missing": missing},
+        )
+    )
 
-    if not JENKINS_USER or not JENKINS_TOKEN or JENKINS_TOKEN == "replace-with-jenkins-api-token":
-        checks.append(preflight_check(
-            "Jenkins backend secret",
-            "FAIL",
-            "Backend is missing a real Jenkins API token.",
-            remediation="Create/update the Kubernetes secret that provides JENKINS_USER and JENKINS_TOKEN, then restart the backend pod.",
-        ))
+    if (
+        not JENKINS_USER
+        or not JENKINS_TOKEN
+        or JENKINS_TOKEN == "replace-with-jenkins-api-token"
+    ):
+        checks.append(
+            preflight_check(
+                "Jenkins backend secret",
+                "FAIL",
+                "Backend is missing a real Jenkins API token.",
+                remediation="Create/update the Kubernetes secret that provides JENKINS_USER and JENKINS_TOKEN, then restart the backend pod.",
+            )
+        )
     else:
         try:
             jenkins_response = requests.get(
@@ -1465,36 +1769,48 @@ def run_environment_preflight(
                 verify=False,
                 timeout=10,
             )
-            checks.append(preflight_check(
-                "Jenkins API authentication",
-                "PASS" if jenkins_response.status_code == 200 else "FAIL",
-                "Backend can authenticate to Jenkins." if jenkins_response.status_code == 200 else f"Jenkins returned HTTP {jenkins_response.status_code}.",
-                remediation="Regenerate the Jenkins API token and update the backend Kubernetes secret.",
-            ))
+            checks.append(
+                preflight_check(
+                    "Jenkins API authentication",
+                    "PASS" if jenkins_response.status_code == 200 else "FAIL",
+                    (
+                        "Backend can authenticate to Jenkins."
+                        if jenkins_response.status_code == 200
+                        else f"Jenkins returned HTTP {jenkins_response.status_code}."
+                    ),
+                    remediation="Regenerate the Jenkins API token and update the backend Kubernetes secret.",
+                )
+            )
         except requests.RequestException as exc:
-            checks.append(preflight_check(
-                "Jenkins API authentication",
-                "FAIL",
-                f"Backend could not reach Jenkins: {exc}",
-                remediation="Validate JENKINS_URL, service routing, and the backend network path to Jenkins.",
-            ))
+            checks.append(
+                preflight_check(
+                    "Jenkins API authentication",
+                    "FAIL",
+                    f"Backend could not reach Jenkins: {exc}",
+                    remediation="Validate JENKINS_URL, service routing, and the backend network path to Jenkins.",
+                )
+            )
 
     if not JENKINS_RUNTIME_ROLE_ARN:
-        checks.append(preflight_check(
-            "Jenkins IRSA role",
-            "WARN",
-            "JENKINS_RUNTIME_ROLE_ARN is not configured for preflight visibility.",
-            required=False,
-            remediation="Annotate the Jenkins service account with its IRSA role and set JENKINS_RUNTIME_ROLE_ARN in backend values.",
-        ))
+        checks.append(
+            preflight_check(
+                "Jenkins IRSA role",
+                "WARN",
+                "JENKINS_RUNTIME_ROLE_ARN is not configured for preflight visibility.",
+                required=False,
+                remediation="Annotate the Jenkins service account with its IRSA role and set JENKINS_RUNTIME_ROLE_ARN in backend values.",
+            )
+        )
     else:
-        checks.append(preflight_check(
-            "Jenkins IRSA role",
-            "PASS",
-            "Jenkins runtime role is configured for IRSA-based deployments.",
-            required=False,
-            details={"role_arn": JENKINS_RUNTIME_ROLE_ARN},
-        ))
+        checks.append(
+            preflight_check(
+                "Jenkins IRSA role",
+                "PASS",
+                "Jenkins runtime role is configured for IRSA-based deployments.",
+                required=False,
+                details={"role_arn": JENKINS_RUNTIME_ROLE_ARN},
+            )
+        )
 
     if not deployment_role:
         summary = summarize_preflight(checks)
@@ -1513,54 +1829,85 @@ def run_environment_preflight(
     try:
         validation_session = assume_role_session(deployment_role, region)
         caller = validation_session.client("sts").get_caller_identity()
-        checks.append(preflight_check(
-            "Deployment role assumption",
-            "PASS",
-            "Validation runtime can assume the deployment role.",
-            details={"account": caller.get("Account"), "assumed_arn": caller.get("Arn")},
-        ))
+        checks.append(
+            preflight_check(
+                "Deployment role assumption",
+                "PASS",
+                "Validation runtime can assume the deployment role.",
+                details={
+                    "account": caller.get("Account"),
+                    "assumed_arn": caller.get("Arn"),
+                },
+            )
+        )
 
         if artifact_bucket:
             try:
                 validation_session.client("s3").head_bucket(Bucket=artifact_bucket)
-                checks.append(preflight_check("Artifact bucket access", "PASS", "Deployment role can access the artifact bucket."))
+                checks.append(
+                    preflight_check(
+                        "Artifact bucket access",
+                        "PASS",
+                        "Deployment role can access the artifact bucket.",
+                    )
+                )
             except ClientError as exc:
-                checks.append(preflight_check(
-                    "Artifact bucket access",
-                    "FAIL",
-                    f"Deployment role cannot access bucket '{artifact_bucket}': {exc.response.get('Error', {}).get('Code', 'AccessDenied')}",
-                    remediation="Grant the deployment role least-privilege access to the configured artifacts bucket.",
-                ))
+                checks.append(
+                    preflight_check(
+                        "Artifact bucket access",
+                        "FAIL",
+                        f"Deployment role cannot access bucket '{artifact_bucket}': {exc.response.get('Error', {}).get('Code', 'AccessDenied')}",
+                        remediation="Grant the deployment role least-privilege access to the configured artifacts bucket.",
+                    )
+                )
 
         if ecr_registry and ecr_repository:
             try:
                 ecr_client = validation_session.client("ecr", region_name=region)
                 ecr_client.describe_repositories(repositoryNames=[ecr_repository])
-                checks.append(preflight_check("Container registry access", "PASS", "Deployment role can read the target container repository."))
+                checks.append(
+                    preflight_check(
+                        "Container registry access",
+                        "PASS",
+                        "Deployment role can read the target container repository.",
+                    )
+                )
             except ClientError as exc:
                 code = exc.response.get("Error", {}).get("Code", "")
-                checks.append(preflight_check(
-                    "Container registry access",
-                    "WARN" if code == "RepositoryNotFoundException" else "FAIL",
-                    "ECR repository does not exist yet; the build pipeline must be allowed to create it."
-                    if code == "RepositoryNotFoundException"
-                    else f"Deployment role cannot access ECR repository '{ecr_repository}': {code or exc}",
-                    required=code != "RepositoryNotFoundException",
-                    remediation="Pre-create the ECR repository or grant the deployment role the required ECR permissions.",
-                ))
+                checks.append(
+                    preflight_check(
+                        "Container registry access",
+                        "WARN" if code == "RepositoryNotFoundException" else "FAIL",
+                        (
+                            "ECR repository does not exist yet; the build pipeline must be allowed to create it."
+                            if code == "RepositoryNotFoundException"
+                            else f"Deployment role cannot access ECR repository '{ecr_repository}': {code or exc}"
+                        ),
+                        required=code != "RepositoryNotFoundException",
+                        remediation="Pre-create the ECR repository or grant the deployment role the required ECR permissions.",
+                    )
+                )
 
         if cluster_name:
             eks_client = validation_session.client("eks", region_name=region)
             try:
                 eks_client.describe_cluster(name=cluster_name)
-                checks.append(preflight_check("EKS cluster visibility", "PASS", "Deployment role can describe the target EKS cluster."))
+                checks.append(
+                    preflight_check(
+                        "EKS cluster visibility",
+                        "PASS",
+                        "Deployment role can describe the target EKS cluster.",
+                    )
+                )
             except ClientError as exc:
-                checks.append(preflight_check(
-                    "EKS cluster visibility",
-                    "FAIL",
-                    f"Deployment role cannot describe EKS cluster '{cluster_name}': {exc.response.get('Error', {}).get('Code', 'AccessDenied')}",
-                    remediation="Grant eks:DescribeCluster to the deployment role for the target cluster.",
-                ))
+                checks.append(
+                    preflight_check(
+                        "EKS cluster visibility",
+                        "FAIL",
+                        f"Deployment role cannot describe EKS cluster '{cluster_name}': {exc.response.get('Error', {}).get('Code', 'AccessDenied')}",
+                        remediation="Grant eks:DescribeCluster to the deployment role for the target cluster.",
+                    )
+                )
 
             try:
                 policies = eks_client.list_associated_access_policies(
@@ -1579,43 +1926,53 @@ def run_environment_preflight(
                         cluster_policy = True
 
                 if namespace_policy:
-                    checks.append(preflight_check(
-                        "Namespace-scoped EKS access",
-                        "PASS",
-                        f"Deployment role is mapped to namespace '{namespace}'.",
-                    ))
+                    checks.append(
+                        preflight_check(
+                            "Namespace-scoped EKS access",
+                            "PASS",
+                            f"Deployment role is mapped to namespace '{namespace}'.",
+                        )
+                    )
                 elif cluster_policy:
-                    checks.append(preflight_check(
+                    checks.append(
+                        preflight_check(
+                            "Namespace-scoped EKS access",
+                            "WARN",
+                            "Deployment role has cluster-scoped EKS access. This works, but is broader than the enterprise namespace-scoped model.",
+                            required=False,
+                            remediation="Associate the role with an EKS access policy scoped to the application namespace.",
+                        )
+                    )
+                else:
+                    checks.append(
+                        preflight_check(
+                            "Namespace-scoped EKS access",
+                            "FAIL" if eks_access_mode == "namespace-scoped" else "WARN",
+                            f"No EKS access policy was found for namespace '{namespace}'.",
+                            required=eks_access_mode == "namespace-scoped",
+                            remediation="Map the deployment role into EKS and grant Kubernetes RBAC only for the approved namespace.",
+                        )
+                    )
+            except ClientError as exc:
+                checks.append(
+                    preflight_check(
                         "Namespace-scoped EKS access",
                         "WARN",
-                        "Deployment role has cluster-scoped EKS access. This works, but is broader than the enterprise namespace-scoped model.",
+                        f"Unable to validate EKS access policies: {exc.response.get('Error', {}).get('Code', 'AccessDenied')}",
                         required=False,
-                        remediation="Associate the role with an EKS access policy scoped to the application namespace.",
-                    ))
-                else:
-                    checks.append(preflight_check(
-                        "Namespace-scoped EKS access",
-                        "FAIL" if eks_access_mode == "namespace-scoped" else "WARN",
-                        f"No EKS access policy was found for namespace '{namespace}'.",
-                        required=eks_access_mode == "namespace-scoped",
-                        remediation="Map the deployment role into EKS and grant Kubernetes RBAC only for the approved namespace.",
-                    ))
-            except ClientError as exc:
-                checks.append(preflight_check(
-                    "Namespace-scoped EKS access",
-                    "WARN",
-                    f"Unable to validate EKS access policies: {exc.response.get('Error', {}).get('Code', 'AccessDenied')}",
-                    required=False,
-                    remediation="Installer validation should verify the role mapping and namespace RBAC when this API is not permitted.",
-                ))
+                        remediation="Installer validation should verify the role mapping and namespace RBAC when this API is not permitted.",
+                    )
+                )
 
     except (ClientError, BotoCoreError, NoCredentialsError, NoRegionError) as exc:
-        checks.append(preflight_check(
-            "Deployment role assumption",
-            "FAIL",
-            f"Validation runtime cannot assume deployment role '{deployment_role}': {exc}",
-            remediation="In validation-only mode, the client-created role must trust the platform validation/Jenkins IRSA role for sts:AssumeRole.",
-        ))
+        checks.append(
+            preflight_check(
+                "Deployment role assumption",
+                "FAIL",
+                f"Validation runtime cannot assume deployment role '{deployment_role}': {exc}",
+                remediation="In validation-only mode, the client-created role must trust the platform validation/Jenkins IRSA role for sts:AssumeRole.",
+            )
+        )
 
     summary = summarize_preflight(checks)
     return {
@@ -1661,10 +2018,16 @@ def get_environment_catalog(
     ensure_environment_catalog_seeded(db)
     entries = db.query(EnvironmentCatalog).order_by(EnvironmentCatalog.name.asc()).all()
     if not principal_has_role(principal, CATALOG_ADMIN_ROLES):
-        entries = [entry for entry in entries if principal_can_use_environment(principal, entry.name)]
+        entries = [
+            entry
+            for entry in entries
+            if principal_can_use_environment(principal, entry.name)
+        ]
     return {
         "environments": [
-            sanitize_catalog_entry_for_principal(catalog_entry_to_dict(entry), principal)
+            sanitize_catalog_entry_for_principal(
+                catalog_entry_to_dict(entry), principal
+            )
             for entry in entries
         ]
     }
@@ -1692,7 +2055,9 @@ def get_environment_preflight(
     principal: AuthPrincipal = Depends(get_current_principal),
 ):
     require_environment_permission(principal, target_env, "Environment preflight")
-    preflight = run_environment_preflight(db, target_env, project_name, pipeline_kind=pipeline_kind)
+    preflight = run_environment_preflight(
+        db, target_env, project_name, pipeline_kind=pipeline_kind
+    )
     return sanitize_preflight_for_principal(preflight, principal)
 
 
@@ -1721,12 +2086,18 @@ def save_environment_catalog(
     principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN)),
 ):
     if not request.environments:
-        return JSONResponse(status_code=400, content={"error": "At least one environment is required"})
+        return JSONResponse(
+            status_code=400, content={"error": "At least one environment is required"}
+        )
     for environment in request.environments:
         upsert_environment_catalog_entry(db, environment.dict())
     db.commit()
     entries = db.query(EnvironmentCatalog).order_by(EnvironmentCatalog.name.asc()).all()
-    return {"status": "saved", "environments": [catalog_entry_to_dict(entry) for entry in entries]}
+    return {
+        "status": "saved",
+        "environments": [catalog_entry_to_dict(entry) for entry in entries],
+    }
+
 
 def _first_non_empty(*values: Optional[str]) -> str:
     for value in values:
@@ -1734,11 +2105,19 @@ def _first_non_empty(*values: Optional[str]) -> str:
             return str(value).strip()
     return ""
 
+
 def _license_sync_identity(current_license: Dict[str, Any]) -> Dict[str, str]:
     return {
-        "client_id": _first_non_empty(os.getenv("ENTERPRISE_CLIENT_ID"), current_license.get("client_id")),
-        "client_name": _first_non_empty(os.getenv("ENTERPRISE_CLIENT_NAME"), current_license.get("client_name")),
-        "installation_id": _first_non_empty(os.getenv("ENTERPRISE_INSTALLATION_ID"), current_license.get("installation_id")),
+        "client_id": _first_non_empty(
+            os.getenv("ENTERPRISE_CLIENT_ID"), current_license.get("client_id")
+        ),
+        "client_name": _first_non_empty(
+            os.getenv("ENTERPRISE_CLIENT_NAME"), current_license.get("client_name")
+        ),
+        "installation_id": _first_non_empty(
+            os.getenv("ENTERPRISE_INSTALLATION_ID"),
+            current_license.get("installation_id"),
+        ),
         "aws_account_id": _first_non_empty(
             os.getenv("ENTERPRISE_AWS_ACCOUNT_ID"),
             os.getenv("AWS_ACCOUNT_ID"),
@@ -1750,8 +2129,11 @@ def _license_sync_identity(current_license: Dict[str, Any]) -> Dict[str, str]:
             os.getenv("AWS_DEFAULT_REGION"),
             current_license.get("region"),
         ),
-        "product_version": _first_non_empty(os.getenv("ENTERPRISE_PRODUCT_VERSION"), os.getenv("PRODUCT_VERSION")),
+        "product_version": _first_non_empty(
+            os.getenv("ENTERPRISE_PRODUCT_VERSION"), os.getenv("PRODUCT_VERSION")
+        ),
     }
+
 
 def _license_usage_endpoint() -> str:
     explicit_endpoint = os.getenv("ENTERPRISE_LICENSE_USAGE_ENDPOINT", "").strip()
@@ -1762,32 +2144,49 @@ def _license_usage_endpoint() -> str:
         return sync_endpoint.replace("/api/v1/licenses/sync", "/api/v1/licenses/usage")
     return ""
 
+
 def _license_upgrade_endpoint() -> str:
     explicit_endpoint = os.getenv("ENTERPRISE_LICENSE_UPGRADE_ENDPOINT", "").strip()
     if explicit_endpoint:
         return explicit_endpoint
     sync_endpoint = os.getenv("ENTERPRISE_LICENSE_SYNC_ENDPOINT", "").strip()
     if sync_endpoint.endswith("/api/v1/licenses/sync"):
-        return sync_endpoint.replace("/api/v1/licenses/sync", "/api/v1/licenses/upgrade-requests")
+        return sync_endpoint.replace(
+            "/api/v1/licenses/sync", "/api/v1/licenses/upgrade-requests"
+        )
     return ""
 
+
 def _license_usage_reporting_enabled() -> bool:
-    return os.getenv("ENTERPRISE_LICENSE_USAGE_REPORTING_ENABLED", "false").strip().lower() == "true"
+    return (
+        os.getenv("ENTERPRISE_LICENSE_USAGE_REPORTING_ENABLED", "false").strip().lower()
+        == "true"
+    )
+
 
 def _license_auto_sync_enabled() -> bool:
-    return os.getenv("ENTERPRISE_LICENSE_AUTO_SYNC_ENABLED", "false").strip().lower() == "true"
+    return (
+        os.getenv("ENTERPRISE_LICENSE_AUTO_SYNC_ENABLED", "false").strip().lower()
+        == "true"
+    )
+
 
 def _license_auto_sync_interval_seconds() -> int:
     try:
-        return max(300, int(os.getenv("ENTERPRISE_LICENSE_AUTO_SYNC_INTERVAL_SECONDS", "21600")))
+        return max(
+            300,
+            int(os.getenv("ENTERPRISE_LICENSE_AUTO_SYNC_INTERVAL_SECONDS", "21600")),
+        )
     except ValueError:
         return 21600
+
 
 def _license_cache_grace_hours() -> int:
     try:
         return max(0, int(os.getenv("ENTERPRISE_LICENSE_CACHE_GRACE_HOURS", "72")))
     except ValueError:
         return 72
+
 
 def _license_usage_status() -> Dict[str, Any]:
     endpoint = _license_usage_endpoint()
@@ -1799,18 +2198,35 @@ def _license_usage_status() -> Dict[str, Any]:
         "cache_grace_hours": _license_cache_grace_hours(),
     }
 
-def report_license_usage(validated_license: Dict[str, Any], event_type: str, *, quantity: int = 1, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+def report_license_usage(
+    validated_license: Dict[str, Any],
+    event_type: str,
+    *,
+    quantity: int = 1,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     endpoint = _license_usage_endpoint()
     if not _license_usage_reporting_enabled():
         return {"status": "disabled", "reported": False}
     if not endpoint:
-        return {"status": "skipped", "reported": False, "reason": "ENTERPRISE_LICENSE_USAGE_ENDPOINT is not configured"}
+        return {
+            "status": "skipped",
+            "reported": False,
+            "reason": "ENTERPRISE_LICENSE_USAGE_ENDPOINT is not configured",
+        }
 
     current_license = default_license_from_env()
     identity = _license_sync_identity(current_license)
-    client_id = _first_non_empty(validated_license.get("client_id"), identity.get("client_id"))
-    installation_id = _first_non_empty(validated_license.get("installation_id"), identity.get("installation_id"))
-    license_key = _first_non_empty(validated_license.get("license_key"), current_license.get("license_key"))
+    client_id = _first_non_empty(
+        validated_license.get("client_id"), identity.get("client_id")
+    )
+    installation_id = _first_non_empty(
+        validated_license.get("installation_id"), identity.get("installation_id")
+    )
+    license_key = _first_non_empty(
+        validated_license.get("license_key"), current_license.get("license_key")
+    )
     if not client_id or not installation_id or not license_key:
         return {
             "status": "skipped",
@@ -1838,7 +2254,9 @@ def report_license_usage(validated_license: Dict[str, Any], event_type: str, *, 
                 "status": "failed",
                 "reported": False,
                 "license_service_status": response.status_code,
-                "error": response_body.get("detail") or response_body.get("error") or "Usage reporting failed",
+                "error": response_body.get("detail")
+                or response_body.get("error")
+                or "Usage reporting failed",
             }
         try:
             response_body = response.json()
@@ -1848,13 +2266,18 @@ def report_license_usage(validated_license: Dict[str, Any], event_type: str, *, 
         response_body["reported"] = True
         return response_body
     except requests.RequestException as exc:
-        logger.warning("License usage reporting skipped because Horizon license service is unreachable: %s", exc)
+        logger.warning(
+            "License usage reporting skipped because Horizon license service is unreachable: %s",
+            exc,
+        )
         return {"status": "failed", "reported": False, "error": str(exc)}
+
 
 def _usage_requester_hash(requested_by: str) -> str:
     if not requested_by:
         return ""
     return hashlib.sha256(requested_by.encode("utf-8")).hexdigest()[:16]
+
 
 @app.get("/license/status")
 def get_license_status(principal: AuthPrincipal = Depends(get_current_principal)):
@@ -1868,11 +2291,14 @@ def get_license_status(principal: AuthPrincipal = Depends(get_current_principal)
         )
         summary = license_summary(validated)
         summary["sync_available"] = bool(
-            os.getenv("ENTERPRISE_LICENSE_MODE", "offline-file").strip().lower() == "online-sync"
+            os.getenv("ENTERPRISE_LICENSE_MODE", "offline-file").strip().lower()
+            == "online-sync"
             and os.getenv("ENTERPRISE_LICENSE_SYNC_ENDPOINT", "").strip()
             and os.getenv("ENTERPRISE_LICENSE_ACTIVATION_TOKEN", "").strip()
         )
-        summary["upgrade_available"] = bool(_license_upgrade_endpoint() and summary.get("client_id"))
+        summary["upgrade_available"] = bool(
+            _license_upgrade_endpoint() and summary.get("client_id")
+        )
         summary.update(_license_usage_status())
         return summary
     except LicenseValidationError as exc:
@@ -1880,13 +2306,17 @@ def get_license_status(principal: AuthPrincipal = Depends(get_current_principal)
         summary = license_summary(license_doc)
         summary["error"] = str(exc)
         summary["sync_available"] = bool(
-            os.getenv("ENTERPRISE_LICENSE_MODE", "offline-file").strip().lower() == "online-sync"
+            os.getenv("ENTERPRISE_LICENSE_MODE", "offline-file").strip().lower()
+            == "online-sync"
             and os.getenv("ENTERPRISE_LICENSE_SYNC_ENDPOINT", "").strip()
             and os.getenv("ENTERPRISE_LICENSE_ACTIVATION_TOKEN", "").strip()
         )
-        summary["upgrade_available"] = bool(_license_upgrade_endpoint() and summary.get("client_id"))
+        summary["upgrade_available"] = bool(
+            _license_upgrade_endpoint() and summary.get("client_id")
+        )
         summary.update(_license_usage_status())
         return JSONResponse(status_code=403, content=summary)
+
 
 @app.post("/license/validate")
 def validate_enterprise_license(
@@ -1903,7 +2333,10 @@ def validate_enterprise_license(
         )
         return license_summary(validated)
     except LicenseValidationError as exc:
-        return JSONResponse(status_code=403, content={"error": str(exc), "status": "invalid"})
+        return JSONResponse(
+            status_code=403, content={"error": str(exc), "status": "invalid"}
+        )
+
 
 def _perform_enterprise_license_sync(force: bool = False) -> tuple[int, Dict[str, Any]]:
     license_mode = os.getenv("ENTERPRISE_LICENSE_MODE", "offline-file").strip().lower()
@@ -1913,20 +2346,32 @@ def _perform_enterprise_license_sync(force: bool = False) -> tuple[int, Dict[str
 
     if license_mode != "online-sync":
         return 400, {
-                "error": "Online license sync is not enabled for this deployment.",
-                "status": "sync_disabled",
-                "license_mode": license_mode,
-            }
+            "error": "Online license sync is not enabled for this deployment.",
+            "status": "sync_disabled",
+            "license_mode": license_mode,
+        }
     if not sync_endpoint:
-        return 400, {"error": "ENTERPRISE_LICENSE_SYNC_ENDPOINT is required.", "status": "sync_failed"}
+        return 400, {
+            "error": "ENTERPRISE_LICENSE_SYNC_ENDPOINT is required.",
+            "status": "sync_failed",
+        }
     if not activation_token:
-        return 400, {"error": "ENTERPRISE_LICENSE_ACTIVATION_TOKEN is required.", "status": "sync_failed"}
+        return 400, {
+            "error": "ENTERPRISE_LICENSE_ACTIVATION_TOKEN is required.",
+            "status": "sync_failed",
+        }
 
     identity = _license_sync_identity(current_license)
     if not identity["client_id"]:
-        return 400, {"error": "ENTERPRISE_CLIENT_ID is required for online license sync.", "status": "sync_failed"}
+        return 400, {
+            "error": "ENTERPRISE_CLIENT_ID is required for online license sync.",
+            "status": "sync_failed",
+        }
     if not identity["installation_id"]:
-        return 400, {"error": "ENTERPRISE_INSTALLATION_ID is required for online license sync.", "status": "sync_failed"}
+        return 400, {
+            "error": "ENTERPRISE_INSTALLATION_ID is required for online license sync.",
+            "status": "sync_failed",
+        }
 
     payload = {
         "client_id": identity["client_id"],
@@ -1954,7 +2399,10 @@ def _perform_enterprise_license_sync(force: bool = False) -> tuple[int, Dict[str
         response = requests.post(sync_endpoint, json=payload, timeout=15)
     except requests.RequestException as exc:
         logger.exception("License sync failed while calling Horizon license service")
-        return 502, {"error": f"License service unreachable: {exc}", "status": "sync_failed"}
+        return 502, {
+            "error": f"License service unreachable: {exc}",
+            "status": "sync_failed",
+        }
 
     if response.status_code >= 400:
         try:
@@ -1967,7 +2415,10 @@ def _perform_enterprise_license_sync(force: bool = False) -> tuple[int, Dict[str
     try:
         response_body = response.json()
     except ValueError:
-        return 502, {"error": "License service returned non-JSON response.", "status": "sync_failed"}
+        return 502, {
+            "error": "License service returned non-JSON response.",
+            "status": "sync_failed",
+        }
 
     synced_license = response_body.get("license") or response_body
     synced_license["license_mode"] = "online-sync"
@@ -1986,10 +2437,13 @@ def _perform_enterprise_license_sync(force: bool = False) -> tuple[int, Dict[str
     summary = license_summary(cached)
     summary["status"] = validated.get("status", "active")
     summary["sync_available"] = True
-    summary["upgrade_available"] = bool(_license_upgrade_endpoint() and summary.get("client_id"))
+    summary["upgrade_available"] = bool(
+        _license_upgrade_endpoint() and summary.get("client_id")
+    )
     summary["message"] = response_body.get("message", "License synced successfully.")
     summary.update(_license_usage_status())
     return 200, summary
+
 
 @app.post("/license/sync")
 def sync_enterprise_license(
@@ -2001,9 +2455,12 @@ def sync_enterprise_license(
         return JSONResponse(status_code=status_code, content=body)
     return body
 
+
 def _license_auto_sync_loop() -> None:
     interval = _license_auto_sync_interval_seconds()
-    logger.info("Enterprise license auto-sync enabled with %s second interval", interval)
+    logger.info(
+        "Enterprise license auto-sync enabled with %s second interval", interval
+    )
     time.sleep(20)
     while True:
         try:
@@ -2011,15 +2468,22 @@ def _license_auto_sync_loop() -> None:
             if status_code >= 400:
                 logger.warning("Enterprise license auto-sync failed: %s", body)
             else:
-                logger.info("Enterprise license auto-sync completed: %s", body.get("status", "ok"))
+                logger.info(
+                    "Enterprise license auto-sync completed: %s",
+                    body.get("status", "ok"),
+                )
         except Exception as exc:
             logger.exception("Enterprise license auto-sync crashed: %s", exc)
         time.sleep(interval)
 
+
 @app.on_event("startup")
 def start_license_auto_sync() -> None:
     if _license_auto_sync_enabled():
-        threading.Thread(target=_license_auto_sync_loop, name="license-auto-sync", daemon=True).start()
+        threading.Thread(
+            target=_license_auto_sync_loop, name="license-auto-sync", daemon=True
+        ).start()
+
 
 @app.post("/license/upgrade-request")
 def request_license_upgrade(
@@ -2030,14 +2494,38 @@ def request_license_upgrade(
     current_license = default_license_from_env()
     identity = _license_sync_identity(current_license)
     if not endpoint:
-        return JSONResponse(status_code=400, content={"error": "ENTERPRISE_LICENSE_UPGRADE_ENDPOINT or ENTERPRISE_LICENSE_SYNC_ENDPOINT is required.", "status": "upgrade_unavailable"})
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "ENTERPRISE_LICENSE_UPGRADE_ENDPOINT or ENTERPRISE_LICENSE_SYNC_ENDPOINT is required.",
+                "status": "upgrade_unavailable",
+            },
+        )
     if not identity["client_id"]:
-        return JSONResponse(status_code=400, content={"error": "ENTERPRISE_CLIENT_ID is required before requesting an upgrade.", "status": "upgrade_failed"})
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "ENTERPRISE_CLIENT_ID is required before requesting an upgrade.",
+                "status": "upgrade_failed",
+            },
+        )
     if not identity["installation_id"]:
-        return JSONResponse(status_code=400, content={"error": "ENTERPRISE_INSTALLATION_ID is required before requesting an upgrade.", "status": "upgrade_failed"})
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "ENTERPRISE_INSTALLATION_ID is required before requesting an upgrade.",
+                "status": "upgrade_failed",
+            },
+        )
 
-    requested_environments = request.requested_environments or current_license.get("allowed_environments") or []
-    requested_features = request.requested_features or current_license.get("enabled_features") or []
+    requested_environments = (
+        request.requested_environments
+        or current_license.get("allowed_environments")
+        or []
+    )
+    requested_features = (
+        request.requested_features or current_license.get("enabled_features") or []
+    )
     payload = {
         "client_id": identity["client_id"],
         "installation_id": identity["installation_id"],
@@ -2063,8 +2551,16 @@ def request_license_upgrade(
     try:
         response = requests.post(endpoint, json=payload, timeout=15)
     except requests.RequestException as exc:
-        logger.exception("License upgrade request failed while calling Horizon license service")
-        return JSONResponse(status_code=502, content={"error": f"License service unreachable: {exc}", "status": "upgrade_failed"})
+        logger.exception(
+            "License upgrade request failed while calling Horizon license service"
+        )
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": f"License service unreachable: {exc}",
+                "status": "upgrade_failed",
+            },
+        )
 
     try:
         response_body = response.json()
@@ -2079,21 +2575,30 @@ def request_license_upgrade(
     response_body["message"] = "Upgrade request submitted to Horizon Relevance."
     return response_body
 
+
 @app.post("/login")
 async def login(request: Request):
     body = await request.json()
     username = body.get("username")
     password = body.get("password")
     if not username or not password:
-        return JSONResponse(status_code=400, content={"error": "Username and password required"})
+        return JSONResponse(
+            status_code=400, content={"error": "Username and password required"}
+        )
     try:
         server = Server(LDAP_SERVER, get_info=ALL)
-        search_conn = Connection(server, user=LDAP_USER, password=LDAP_PASSWORD, auto_bind=True)
+        search_conn = Connection(
+            server, user=LDAP_USER, password=LDAP_PASSWORD, auto_bind=True
+        )
         search_conn.search(
             search_base=LDAP_BASE_DN,
             search_filter=f"({LDAP_UID_ATTRIBUTE}={escape_filter_chars(username)})",
             search_scope=SUBTREE,
-            attributes=[LDAP_DISPLAY_NAME_ATTRIBUTE, LDAP_MAIL_ATTRIBUTE, LDAP_UID_ATTRIBUTE]
+            attributes=[
+                LDAP_DISPLAY_NAME_ATTRIBUTE,
+                LDAP_MAIL_ATTRIBUTE,
+                LDAP_UID_ATTRIBUTE,
+            ],
         )
         if not search_conn.entries:
             search_conn.unbind()
@@ -2101,15 +2606,25 @@ async def login(request: Request):
 
         user_entry = search_conn.entries[0]
         user_dn = str(user_entry.entry_dn)
-        display_name = str(user_entry[LDAP_DISPLAY_NAME_ATTRIBUTE]) if LDAP_DISPLAY_NAME_ATTRIBUTE in user_entry else username
-        email = str(user_entry[LDAP_MAIL_ATTRIBUTE]) if LDAP_MAIL_ATTRIBUTE in user_entry else ""
+        display_name = (
+            str(user_entry[LDAP_DISPLAY_NAME_ATTRIBUTE])
+            if LDAP_DISPLAY_NAME_ATTRIBUTE in user_entry
+            else username
+        )
+        email = (
+            str(user_entry[LDAP_MAIL_ATTRIBUTE])
+            if LDAP_MAIL_ATTRIBUTE in user_entry
+            else ""
+        )
         groups = resolve_ldap_groups(search_conn, user_entry, user_dn)
         search_conn.unbind()
 
         auth_conn = Connection(server, user=user_dn, password=password, auto_bind=True)
         auth_conn.unbind()
 
-        roles = apply_bootstrap_role_grants(username, email, resolve_roles_from_ldap_groups(groups))
+        roles = apply_bootstrap_role_grants(
+            username, email, resolve_roles_from_ldap_groups(groups)
+        )
         principal = AuthPrincipal(
             username=username,
             email=email,
@@ -2129,32 +2644,56 @@ async def login(request: Request):
         }
 
     except Exception:
-        return JSONResponse(status_code=401, content={"error": "Invalid credentials or server error"})
+        return JSONResponse(
+            status_code=401, content={"error": "Invalid credentials or server error"}
+        )
+
 
 @app.get("/get_ldap_users")
-def get_ldap_users(principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN))):
+def get_ldap_users(
+    principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN)),
+):
     try:
         server = Server(LDAP_SERVER, get_info=ALL)
-        conn = Connection(server, user=LDAP_USER, password=LDAP_PASSWORD, auto_bind=True)
+        conn = Connection(
+            server, user=LDAP_USER, password=LDAP_PASSWORD, auto_bind=True
+        )
         conn.search(
             search_base=LDAP_BASE_DN,
             search_filter=SEARCH_FILTER,
             search_scope=SUBTREE,
-            attributes=[LDAP_UID_ATTRIBUTE, LDAP_DISPLAY_NAME_ATTRIBUTE, LDAP_MAIL_ATTRIBUTE]
+            attributes=[
+                LDAP_UID_ATTRIBUTE,
+                LDAP_DISPLAY_NAME_ATTRIBUTE,
+                LDAP_MAIL_ATTRIBUTE,
+            ],
         )
         users = []
         seen = set()
         for entry in conn.entries:
-            uid = str(entry[LDAP_UID_ATTRIBUTE]) if LDAP_UID_ATTRIBUTE in entry else None
-            display_name = str(entry[LDAP_DISPLAY_NAME_ATTRIBUTE]) if LDAP_DISPLAY_NAME_ATTRIBUTE in entry else uid
-            email = str(entry[LDAP_MAIL_ATTRIBUTE]) if LDAP_MAIL_ATTRIBUTE in entry else ""
+            uid = (
+                str(entry[LDAP_UID_ATTRIBUTE]) if LDAP_UID_ATTRIBUTE in entry else None
+            )
+            display_name = (
+                str(entry[LDAP_DISPLAY_NAME_ATTRIBUTE])
+                if LDAP_DISPLAY_NAME_ATTRIBUTE in entry
+                else uid
+            )
+            email = (
+                str(entry[LDAP_MAIL_ATTRIBUTE]) if LDAP_MAIL_ATTRIBUTE in entry else ""
+            )
             if uid and uid not in seen:
-                users.append({"username": uid, "fullName": display_name, "email": email})
+                users.append(
+                    {"username": uid, "fullName": display_name, "email": email}
+                )
                 seen.add(uid)
         conn.unbind()
         return JSONResponse(content=users)
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": "Failed to fetch LDAP users"})
+        return JSONResponse(
+            status_code=500, content={"error": "Failed to fetch LDAP users"}
+        )
+
 
 @app.get("/my_applications")
 def get_user_applications(
@@ -2164,31 +2703,42 @@ def get_user_applications(
 ):
     try:
         requester_email = principal_email(principal)
-        print(f"[DEBUG] Incoming email: {email}; authenticated email: {requester_email}")
+        print(
+            f"[DEBUG] Incoming email: {email}; authenticated email: {requester_email}"
+        )
         if principal_can_view_all_findings(principal):
             apps = db.query(Application.name).all()
             print(f"[DEBUG] Admin access - apps: {apps}")
             return [a.name for a in apps]
 
-        apps = db.query(Application.name).join(ApplicationUserAccess).filter(
-            ApplicationUserAccess.user_email == requester_email
-        ).all()
-        owned_apps = db.query(Application.name).filter(
-            Application.owner_email == requester_email
-        ).all()
+        apps = (
+            db.query(Application.name)
+            .join(ApplicationUserAccess)
+            .filter(ApplicationUserAccess.user_email == requester_email)
+            .all()
+        )
+        owned_apps = (
+            db.query(Application.name)
+            .filter(Application.owner_email == requester_email)
+            .all()
+        )
         names = sorted({a.name for a in apps}.union({a.name for a in owned_apps}))
         print(f"[DEBUG] User apps: {names}")
         return names
 
     except Exception as e:
         print(f"[ERROR] in /my_applications: {e}")
-        return JSONResponse(status_code=500, content={"error": "Failed to call backend"})
+        return JSONResponse(
+            status_code=500, content={"error": "Failed to call backend"}
+        )
 
 
 @app.post("/pipeline")
 def create_pipeline(
     request: PipelineRequest,
-    principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER)),
+    principal: AuthPrincipal = Depends(
+        require_roles(ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER)
+    ),
 ):
     values = {
         "APP_TYPE": request.app_type,
@@ -2212,7 +2762,7 @@ def create_pipeline(
         headers=jenkins_headers("application/xml"),
         auth=(JENKINS_USER, JENKINS_TOKEN),
         data=job_config,
-        verify=False
+        verify=False,
     )
 
     build_response = trigger_jenkins_parameterized_build(
@@ -2224,21 +2774,24 @@ def create_pipeline(
             "CREDENTIALS_ID": "github-token",
             "ENABLE_SONARQUBE": str(request.ENABLE_SONARQUBE).lower(),
             "ENABLE_OPA": str(request.ENABLE_OPA).lower(),
-            "ENABLE_TRIVY": str(request.ENABLE_TRIVY).lower()
+            "ENABLE_TRIVY": str(request.ENABLE_TRIVY).lower(),
         },
     )
 
     return {
         "status": "Pipeline created and triggered",
         "create_response_code": create_response.status_code,
-        "build_response_code": build_response.status_code
+        "build_response_code": build_response.status_code,
     }
+
 
 @app.post("/devops/pipeline")
 def create_devops_pipeline(
     request: DevopsPipelineRequest,
     db: Session = Depends(get_db),
-    principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER)),
+    principal: AuthPrincipal = Depends(
+        require_roles(ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER)
+    ),
 ):
     allowed_project_types = {
         "Docker",
@@ -2251,19 +2804,35 @@ def create_devops_pipeline(
     if request.project_type not in allowed_project_types:
         return JSONResponse(
             status_code=400,
-            content={"error": "Unsupported project_type", "supported_project_types": sorted(allowed_project_types)},
+            content={
+                "error": "Unsupported project_type",
+                "supported_project_types": sorted(allowed_project_types),
+            },
         )
 
     job_name = request.project_name.strip()
     if not job_name:
-        return JSONResponse(status_code=400, content={"error": "project_name is required"})
+        return JSONResponse(
+            status_code=400, content={"error": "project_name is required"}
+        )
 
-    env_values, env_error = resolve_environment_catalog_values(db, request.target_env, job_name, request)
+    env_values, env_error = resolve_environment_catalog_values(
+        db, request.target_env, job_name, request
+    )
     if env_error:
-        return JSONResponse(status_code=400, content={"error": env_error, "status": "environment_catalog_missing"})
-    require_environment_permission(principal, env_values["TARGET_ENV"], "Build & Deploy Pipeline")
+        return JSONResponse(
+            status_code=400,
+            content={"error": env_error, "status": "environment_catalog_missing"},
+        )
+    require_environment_permission(
+        principal, env_values["TARGET_ENV"], "Build & Deploy Pipeline"
+    )
 
-    missing_catalog_fields = [field for field in ["AWS_REGION", "ECR_REGISTRY", "ECR_REPOSITORY", "ARTIFACT_BUCKET"] if not env_values.get(field)]
+    missing_catalog_fields = [
+        field
+        for field in ["AWS_REGION", "ECR_REGISTRY", "ECR_REPOSITORY", "ARTIFACT_BUCKET"]
+        if not env_values.get(field)
+    ]
     if missing_catalog_fields:
         return JSONResponse(
             status_code=400,
@@ -2274,7 +2843,9 @@ def create_devops_pipeline(
             },
         )
 
-    preflight = run_environment_preflight(db, request.target_env, job_name, request, pipeline_kind="DEVOPS")
+    preflight = run_environment_preflight(
+        db, request.target_env, job_name, request, pipeline_kind="DEVOPS"
+    )
     blocking_preflight = preflight_blocking_response(preflight)
     if blocking_preflight:
         return blocking_preflight
@@ -2286,18 +2857,23 @@ def create_devops_pipeline(
             pipeline_name="Build & Deploy Pipeline",
             target_env=env_values["TARGET_ENV"],
             requested_features=requested_devops_features(request),
-            aws_account_id=env_values.get("AWS_ACCOUNT_ID") or aws_account_id_from_registry(env_values.get("ECR_REGISTRY")),
+            aws_account_id=env_values.get("AWS_ACCOUNT_ID")
+            or aws_account_id_from_registry(env_values.get("ECR_REGISTRY")),
         )
     except LicenseValidationError as exc:
-        return JSONResponse(status_code=403, content={"error": str(exc), "status": "license_denied"})
+        return JSONResponse(
+            status_code=403, content={"error": str(exc), "status": "license_denied"}
+        )
 
     license_summary_doc = license_summary(validated_license)
     requester = principal.username or request.requestedBy
-    requester_notify_email = (request.notify_email or "").strip() or principal_email(principal)
+    requester_notify_email = (request.notify_email or "").strip() or principal_email(
+        principal
+    )
     notification_requested = bool(
-        request.enable_notifications or
-        requester_notify_email or
-        (request.additional_notify_emails or "").strip()
+        request.enable_notifications
+        or requester_notify_email
+        or (request.additional_notify_emails or "").strip()
     )
 
     values = {
@@ -2305,10 +2881,16 @@ def create_devops_pipeline(
         "CLIENT_NAME": str(validated_license.get("client_name") or "").strip(),
         "LICENSE_TYPE": str(validated_license.get("license_type") or "").strip(),
         "LICENSE_EXPIRES_AT": str(validated_license.get("expires_at") or "").strip(),
-        "LICENSED_PIPELINES": ",".join(validated_license.get("enabled_pipelines") or []),
+        "LICENSED_PIPELINES": ",".join(
+            validated_license.get("enabled_pipelines") or []
+        ),
         "LICENSED_FEATURES": ",".join(validated_license.get("enabled_features") or []),
-        "LICENSED_ENVIRONMENTS": ",".join(validated_license.get("allowed_environments") or []),
-        "LICENSE_VALIDATION_MODE": str(validated_license.get("validation_mode") or "unknown"),
+        "LICENSED_ENVIRONMENTS": ",".join(
+            validated_license.get("allowed_environments") or []
+        ),
+        "LICENSE_VALIDATION_MODE": str(
+            validated_license.get("validation_mode") or "unknown"
+        ),
         "PROJECT_NAME": job_name,
         "PROJECT_TYPE": request.project_type,
         "REPO_TYPE": request.repo_type,
@@ -2355,9 +2937,17 @@ def create_devops_pipeline(
         "SNS_TOPIC_ARN": env_values["SNS_TOPIC_ARN"],
     }
     bool_param_names = [
-        "ENABLE_SONARQUBE", "ENABLE_CHECKMARX", "ENABLE_SOAPUI", "ENABLE_JMETER",
-        "ENABLE_SELENIUM", "ENABLE_NEWMAN", "ENABLE_RESTASSURED", "ENABLE_UFT",
-        "ENABLE_TRIVY", "ENABLE_OPA", "ENABLE_NOTIFICATIONS",
+        "ENABLE_SONARQUBE",
+        "ENABLE_CHECKMARX",
+        "ENABLE_SOAPUI",
+        "ENABLE_JMETER",
+        "ENABLE_SELENIUM",
+        "ENABLE_NEWMAN",
+        "ENABLE_RESTASSURED",
+        "ENABLE_UFT",
+        "ENABLE_TRIVY",
+        "ENABLE_OPA",
+        "ENABLE_NOTIFICATIONS",
     ]
     job_config = build_runner_job_config(
         description=f"Build & Deploy Pipeline for {values['PROJECT_NAME']}",
@@ -2368,22 +2958,34 @@ def create_devops_pipeline(
     job_url = f"{JENKINS_URL}/job/{job_name}/api/json"
     job_check = requests.get(job_url, auth=(JENKINS_USER, JENKINS_TOKEN), verify=False)
     if job_check.status_code == 200:
-        config_response = jenkins_post(f"{JENKINS_URL}/job/{job_name}/config.xml", content_type="application/xml", data=job_config)
+        config_response = jenkins_post(
+            f"{JENKINS_URL}/job/{job_name}/config.xml",
+            content_type="application/xml",
+            data=job_config,
+        )
         create_status = "updated"
         create_response_code = config_response.status_code
         create_response_obj = config_response
     else:
-        create_response = jenkins_post(f"{JENKINS_URL}/createItem?name={job_name}", content_type="application/xml", data=job_config)
+        create_response = jenkins_post(
+            f"{JENKINS_URL}/createItem?name={job_name}",
+            content_type="application/xml",
+            data=job_config,
+        )
         create_status = "created"
         create_response_code = create_response.status_code
         create_response_obj = create_response
 
     if create_response_code not in (200, 201, 202):
-        return jenkins_failure_response(f"{create_status} job '{job_name}'", create_response_obj)
+        return jenkins_failure_response(
+            f"{create_status} job '{job_name}'", create_response_obj
+        )
 
     build_response = trigger_jenkins_parameterized_build(job_name, values)
     if build_response.status_code not in (200, 201, 202):
-        return jenkins_failure_response(f"trigger build for job '{job_name}'", build_response)
+        return jenkins_failure_response(
+            f"trigger build for job '{job_name}'", build_response
+        )
 
     ensure_application_registered(
         db,
@@ -2423,11 +3025,16 @@ def create_devops_pipeline(
         "build_response_code": build_response.status_code,
     }
 
+
 @app.post("/test/devops/pipeline")
 def create_test_devops_pipeline(
     request: TestDevopsPipelineRequest,
     db: Session = Depends(get_db),
-    principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER, ROLE_QA, ROLE_RELEASE_MANAGER)),
+    principal: AuthPrincipal = Depends(
+        require_roles(
+            ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER, ROLE_QA, ROLE_RELEASE_MANAGER
+        )
+    ),
 ):
     allowed_project_types = {
         "Docker",
@@ -2438,18 +3045,37 @@ def create_test_devops_pipeline(
         "WebComponent",
     }
     if request.project_type not in allowed_project_types:
-        return JSONResponse(status_code=400, content={"error": "Unsupported project_type", "supported_project_types": sorted(allowed_project_types)})
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Unsupported project_type",
+                "supported_project_types": sorted(allowed_project_types),
+            },
+        )
 
     job_name = f"{request.project_name.strip()}-test"
     if not request.project_name.strip():
-        return JSONResponse(status_code=400, content={"error": "project_name is required"})
+        return JSONResponse(
+            status_code=400, content={"error": "project_name is required"}
+        )
 
-    env_values, env_error = resolve_environment_catalog_values(db, request.target_env, request.project_name.strip(), request)
+    env_values, env_error = resolve_environment_catalog_values(
+        db, request.target_env, request.project_name.strip(), request
+    )
     if env_error:
-        return JSONResponse(status_code=400, content={"error": env_error, "status": "environment_catalog_missing"})
-    require_environment_permission(principal, env_values["TARGET_ENV"], "Validation Pipeline")
+        return JSONResponse(
+            status_code=400,
+            content={"error": env_error, "status": "environment_catalog_missing"},
+        )
+    require_environment_permission(
+        principal, env_values["TARGET_ENV"], "Validation Pipeline"
+    )
 
-    missing_catalog_fields = [field for field in ["AWS_REGION", "ARTIFACT_BUCKET", "CLIENT_AWS_ROLE_ARN"] if not env_values.get(field)]
+    missing_catalog_fields = [
+        field
+        for field in ["AWS_REGION", "ARTIFACT_BUCKET", "CLIENT_AWS_ROLE_ARN"]
+        if not env_values.get(field)
+    ]
     if missing_catalog_fields:
         return JSONResponse(
             status_code=400,
@@ -2460,7 +3086,13 @@ def create_test_devops_pipeline(
             },
         )
 
-    preflight = run_environment_preflight(db, request.target_env, request.project_name.strip(), request, pipeline_kind="TEST_DEVOPS")
+    preflight = run_environment_preflight(
+        db,
+        request.target_env,
+        request.project_name.strip(),
+        request,
+        pipeline_kind="TEST_DEVOPS",
+    )
     blocking_preflight = preflight_blocking_response(preflight)
     if blocking_preflight:
         return blocking_preflight
@@ -2472,17 +3104,22 @@ def create_test_devops_pipeline(
             pipeline_name="Validation Pipeline",
             target_env=env_values["TARGET_ENV"],
             requested_features=requested_test_devops_features(request),
-            aws_account_id=aws_account_id_from_registry(request.image_uri or "") or env_values.get("AWS_ACCOUNT_ID"),
+            aws_account_id=aws_account_id_from_registry(request.image_uri or "")
+            or env_values.get("AWS_ACCOUNT_ID"),
         )
     except LicenseValidationError as exc:
-        return JSONResponse(status_code=403, content={"error": str(exc), "status": "license_denied"})
+        return JSONResponse(
+            status_code=403, content={"error": str(exc), "status": "license_denied"}
+        )
 
     requester = principal.username or request.requestedBy
-    requester_notify_email = (request.notify_email or "").strip() or principal_email(principal)
+    requester_notify_email = (request.notify_email or "").strip() or principal_email(
+        principal
+    )
     notification_requested = bool(
-        request.enable_notifications or
-        requester_notify_email or
-        (request.additional_notify_emails or "").strip()
+        request.enable_notifications
+        or requester_notify_email
+        or (request.additional_notify_emails or "").strip()
     )
 
     values = {
@@ -2490,10 +3127,16 @@ def create_test_devops_pipeline(
         "CLIENT_NAME": str(validated_license.get("client_name") or "").strip(),
         "LICENSE_TYPE": str(validated_license.get("license_type") or "").strip(),
         "LICENSE_EXPIRES_AT": str(validated_license.get("expires_at") or "").strip(),
-        "LICENSED_PIPELINES": ",".join(validated_license.get("enabled_pipelines") or []),
+        "LICENSED_PIPELINES": ",".join(
+            validated_license.get("enabled_pipelines") or []
+        ),
         "LICENSED_FEATURES": ",".join(validated_license.get("enabled_features") or []),
-        "LICENSED_ENVIRONMENTS": ",".join(validated_license.get("allowed_environments") or []),
-        "LICENSE_VALIDATION_MODE": str(validated_license.get("validation_mode") or "unknown"),
+        "LICENSED_ENVIRONMENTS": ",".join(
+            validated_license.get("allowed_environments") or []
+        ),
+        "LICENSE_VALIDATION_MODE": str(
+            validated_license.get("validation_mode") or "unknown"
+        ),
         "PROJECT_NAME": request.project_name.strip(),
         "PROJECT_TYPE": request.project_type,
         "REPO_TYPE": request.repo_type,
@@ -2517,12 +3160,16 @@ def create_test_devops_pipeline(
         "IMAGE_URI": (request.image_uri or "").strip(),
         "TARGET_APP_URL": (request.target_app_url or "").strip(),
         "API_BASE_URL": (request.api_base_url or request.target_app_url or "").strip(),
-        "JMETER_BASE_URL": (request.target_app_url or request.api_base_url or "").strip(),
+        "JMETER_BASE_URL": (
+            request.target_app_url or request.api_base_url or ""
+        ).strip(),
         "JMETER_TEST_PLAN": (request.jmeter_test_plan or "").strip(),
         "JMETER_THREADS": str(request.jmeter_threads or "10").strip(),
         "JMETER_RAMP_SECONDS": str(request.jmeter_ramp_seconds or "30").strip(),
         "JMETER_LOOPS": str(request.jmeter_loops or "5").strip(),
-        "JMETER_MAX_ERROR_PERCENT": str(request.jmeter_max_error_percent or "1").strip(),
+        "JMETER_MAX_ERROR_PERCENT": str(
+            request.jmeter_max_error_percent or "1"
+        ).strip(),
         "JMETER_MAX_AVG_MS": str(request.jmeter_max_avg_ms or "2000").strip(),
         "JMETER_MAX_P95_MS": str(request.jmeter_max_p95_ms or "5000").strip(),
         "NEWMAN_COLLECTION_PATH": (request.newman_collection_path or "").strip(),
@@ -2544,9 +3191,18 @@ def create_test_devops_pipeline(
         "SNS_TOPIC_ARN": env_values["SNS_TOPIC_ARN"],
     }
     bool_param_names = [
-        "ENABLE_SONARQUBE", "ENABLE_CHECKMARX", "ENABLE_SOAPUI", "ENABLE_JMETER",
-        "ENABLE_SELENIUM", "ENABLE_NEWMAN", "ENABLE_RESTASSURED", "ENABLE_UFT",
-        "ENABLE_TRIVY", "ENABLE_OPA", "ENABLE_NOTIFICATIONS", "NEWMAN_FAIL_ON_ERROR",
+        "ENABLE_SONARQUBE",
+        "ENABLE_CHECKMARX",
+        "ENABLE_SOAPUI",
+        "ENABLE_JMETER",
+        "ENABLE_SELENIUM",
+        "ENABLE_NEWMAN",
+        "ENABLE_RESTASSURED",
+        "ENABLE_UFT",
+        "ENABLE_TRIVY",
+        "ENABLE_OPA",
+        "ENABLE_NOTIFICATIONS",
+        "NEWMAN_FAIL_ON_ERROR",
     ]
     job_config = build_runner_job_config(
         description=f"Validation Pipeline for {values['PROJECT_NAME']}",
@@ -2557,22 +3213,34 @@ def create_test_devops_pipeline(
     job_url = f"{JENKINS_URL}/job/{job_name}/api/json"
     job_check = requests.get(job_url, auth=(JENKINS_USER, JENKINS_TOKEN), verify=False)
     if job_check.status_code == 200:
-        config_response = jenkins_post(f"{JENKINS_URL}/job/{job_name}/config.xml", content_type="application/xml", data=job_config)
+        config_response = jenkins_post(
+            f"{JENKINS_URL}/job/{job_name}/config.xml",
+            content_type="application/xml",
+            data=job_config,
+        )
         create_status = "updated"
         create_response_code = config_response.status_code
         create_response_obj = config_response
     else:
-        create_response = jenkins_post(f"{JENKINS_URL}/createItem?name={job_name}", content_type="application/xml", data=job_config)
+        create_response = jenkins_post(
+            f"{JENKINS_URL}/createItem?name={job_name}",
+            content_type="application/xml",
+            data=job_config,
+        )
         create_status = "created"
         create_response_code = create_response.status_code
         create_response_obj = create_response
 
     if create_response_code not in (200, 201, 202):
-        return jenkins_failure_response(f"{create_status} job '{job_name}'", create_response_obj)
+        return jenkins_failure_response(
+            f"{create_status} job '{job_name}'", create_response_obj
+        )
 
     build_response = trigger_jenkins_parameterized_build(job_name, values)
     if build_response.status_code not in (200, 201, 202):
-        return jenkins_failure_response(f"trigger build for job '{job_name}'", build_response)
+        return jenkins_failure_response(
+            f"trigger build for job '{job_name}'", build_response
+        )
 
     ensure_application_registered(
         db,
@@ -2619,21 +3287,28 @@ def create_test_devops_pipeline(
         "build_response_code": build_response.status_code,
     }
 
+
 @app.post("/prod/devops/pipeline")
 def create_prod_devops_pipeline(
     request: ProdDevopsPipelineRequest,
     db: Session = Depends(get_db),
-    principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN, ROLE_RELEASE_MANAGER)),
+    principal: AuthPrincipal = Depends(
+        require_roles(ROLE_PLATFORM_ADMIN, ROLE_RELEASE_MANAGER)
+    ),
 ):
     if not request.project_name.strip():
-        return JSONResponse(status_code=400, content={"error": "project_name is required"})
+        return JSONResponse(
+            status_code=400, content={"error": "project_name is required"}
+        )
     project_name = request.project_name.strip()
     source_env = normalize_environment_name(request.source_env)
     target_env = normalize_environment_name(request.target_env)
     if source_env == target_env:
         return JSONResponse(
             status_code=400,
-            content={"error": "Source and target environments must be different for release promotion"},
+            content={
+                "error": "Source and target environments must be different for release promotion"
+            },
         )
     if source_env not in {"DEV", "QA", "STAGE"}:
         return JSONResponse(
@@ -2647,21 +3322,51 @@ def create_prod_devops_pipeline(
         )
     job_name = f"{project_name}-{target_env.lower()}-release"
 
-    source_env_values, source_env_error = resolve_environment_catalog_values(db, source_env, project_name, request)
+    source_env_values, source_env_error = resolve_environment_catalog_values(
+        db, source_env, project_name, request
+    )
     if source_env_error:
-        return JSONResponse(status_code=400, content={"error": source_env_error, "status": "source_environment_catalog_missing"})
-    target_env_values, target_env_error = resolve_environment_catalog_values(db, target_env, project_name, request)
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": source_env_error,
+                "status": "source_environment_catalog_missing",
+            },
+        )
+    target_env_values, target_env_error = resolve_environment_catalog_values(
+        db, target_env, project_name, request
+    )
     if target_env_error:
-        return JSONResponse(status_code=400, content={"error": target_env_error, "status": "target_environment_catalog_missing"})
-    require_environment_permission(principal, target_env_values["TARGET_ENV"], "Release Promotion Pipeline")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": target_env_error,
+                "status": "target_environment_catalog_missing",
+            },
+        )
+    require_environment_permission(
+        principal, target_env_values["TARGET_ENV"], "Release Promotion Pipeline"
+    )
 
     missing_catalog_fields = [
-        field for field in ["ARTIFACT_BUCKET", "ECR_REGISTRY", "ECR_REPOSITORY", "SOURCE_AWS_ROLE_ARN"]
+        field
+        for field in [
+            "ARTIFACT_BUCKET",
+            "ECR_REGISTRY",
+            "ECR_REPOSITORY",
+            "SOURCE_AWS_ROLE_ARN",
+        ]
         if not source_env_values.get(field)
     ]
     target_cluster_field = f"{target_env}_CLUSTER_NAME"
     missing_catalog_fields += [
-        field for field in ["ECR_REGISTRY", "ECR_REPOSITORY", "TARGET_AWS_ROLE_ARN", target_cluster_field]
+        field
+        for field in [
+            "ECR_REGISTRY",
+            "ECR_REPOSITORY",
+            "TARGET_AWS_ROLE_ARN",
+            target_cluster_field,
+        ]
         if not target_env_values.get(field)
     ]
     if missing_catalog_fields:
@@ -2675,17 +3380,27 @@ def create_prod_devops_pipeline(
             },
         )
 
-    source_preflight = run_environment_preflight(db, source_env, project_name, request, pipeline_kind="PROD_DEVOPS_SOURCE")
-    target_preflight = run_environment_preflight(db, target_env, project_name, request, pipeline_kind="PROD_DEVOPS")
-    if ENVIRONMENT_PREFLIGHT_ENFORCED and (not source_preflight.get("ready") or not target_preflight.get("ready")):
+    source_preflight = run_environment_preflight(
+        db, source_env, project_name, request, pipeline_kind="PROD_DEVOPS_SOURCE"
+    )
+    target_preflight = run_environment_preflight(
+        db, target_env, project_name, request, pipeline_kind="PROD_DEVOPS"
+    )
+    if ENVIRONMENT_PREFLIGHT_ENFORCED and (
+        not source_preflight.get("ready") or not target_preflight.get("ready")
+    ):
         return JSONResponse(
             status_code=400,
             content={
                 "error": "Source or target environment is not ready for release promotion.",
                 "status": "environment_not_ready",
                 "preflight": {
-                    "source": sanitize_preflight_for_principal(source_preflight, principal),
-                    "target": sanitize_preflight_for_principal(target_preflight, principal),
+                    "source": sanitize_preflight_for_principal(
+                        source_preflight, principal
+                    ),
+                    "target": sanitize_preflight_for_principal(
+                        target_preflight, principal
+                    ),
                 },
             },
         )
@@ -2697,21 +3412,35 @@ def create_prod_devops_pipeline(
             pipeline_name="Release Promotion Pipeline",
             target_env=target_env_values["TARGET_ENV"],
             requested_features=requested_prod_devops_features(request),
-            aws_account_id=target_env_values.get("AWS_ACCOUNT_ID") or aws_account_id_from_registry(target_env_values.get("ECR_REGISTRY")),
+            aws_account_id=target_env_values.get("AWS_ACCOUNT_ID")
+            or aws_account_id_from_registry(target_env_values.get("ECR_REGISTRY")),
         )
     except LicenseValidationError as exc:
-        return JSONResponse(status_code=403, content={"error": str(exc), "status": "license_denied"})
+        return JSONResponse(
+            status_code=403, content={"error": str(exc), "status": "license_denied"}
+        )
 
     license_summary_doc = license_summary(validated_license)
     artifact_prefix = request.artifact_prefix.strip().strip("/")
-    image_json_path = (request.image_json_path or f"{artifact_prefix}/image.json").strip().lstrip("/")
-    template_config_path = (request.template_config_path or f"{artifact_prefix}/templateconfiguration.json").strip().lstrip("/")
+    image_json_path = (
+        (request.image_json_path or f"{artifact_prefix}/image.json").strip().lstrip("/")
+    )
+    template_config_path = (
+        (
+            request.template_config_path
+            or f"{artifact_prefix}/templateconfiguration.json"
+        )
+        .strip()
+        .lstrip("/")
+    )
     requester = principal.username or request.requestedBy
-    requester_notify_email = (request.notify_email or "").strip() or principal_email(principal)
+    requester_notify_email = (request.notify_email or "").strip() or principal_email(
+        principal
+    )
     notification_requested = bool(
-        request.enable_notifications or
-        requester_notify_email or
-        (request.additional_notify_emails or "").strip()
+        request.enable_notifications
+        or requester_notify_email
+        or (request.additional_notify_emails or "").strip()
     )
 
     values = {
@@ -2719,50 +3448,90 @@ def create_prod_devops_pipeline(
         "CLIENT_NAME": str(validated_license.get("client_name") or "").strip(),
         "LICENSE_TYPE": str(validated_license.get("license_type") or "").strip(),
         "LICENSE_EXPIRES_AT": str(validated_license.get("expires_at") or "").strip(),
-        "LICENSED_PIPELINES": ",".join(validated_license.get("enabled_pipelines") or []),
+        "LICENSED_PIPELINES": ",".join(
+            validated_license.get("enabled_pipelines") or []
+        ),
         "LICENSED_FEATURES": ",".join(validated_license.get("enabled_features") or []),
-        "LICENSED_ENVIRONMENTS": ",".join(validated_license.get("allowed_environments") or []),
-        "LICENSE_VALIDATION_MODE": str(validated_license.get("validation_mode") or "unknown"),
+        "LICENSED_ENVIRONMENTS": ",".join(
+            validated_license.get("allowed_environments") or []
+        ),
+        "LICENSE_VALIDATION_MODE": str(
+            validated_license.get("validation_mode") or "unknown"
+        ),
         "PROJECT_NAME": project_name,
         "PIPELINE_KIND": "PROD_DEVOPS",
         "SERVICE_NAME": "Release Promotion Pipeline",
         "REQUESTED_BY": requester,
-        "ARTIFACT_BUCKET": (request.artifact_bucket or source_env_values["ARTIFACT_BUCKET"]).strip(),
+        "ARTIFACT_BUCKET": (
+            request.artifact_bucket or source_env_values["ARTIFACT_BUCKET"]
+        ).strip(),
         "ARTIFACT_PREFIX": artifact_prefix,
         "IMAGE_JSON_PATH": image_json_path,
         "TEMPLATE_CONFIG_PATH": template_config_path,
         "SOURCE_ENV": source_env_values["TARGET_ENV"],
         "TARGET_ENV": target_env_values["TARGET_ENV"],
-        "AWS_REGION": target_env_values["AWS_REGION"] or source_env_values["AWS_REGION"] or "us-east-1",
-        "SOURCE_ECR_REGISTRY": (request.source_ecr_registry or source_env_values["ECR_REGISTRY"]).strip(),
-        "SOURCE_ECR_REPOSITORY": (request.source_ecr_repository or source_env_values["ECR_REPOSITORY"]).strip(),
-        "TARGET_ECR_REGISTRY": (request.target_ecr_registry or target_env_values["ECR_REGISTRY"]).strip(),
-        "TARGET_ECR_REPOSITORY": (request.target_ecr_repository or target_env_values["ECR_REPOSITORY"]).strip(),
+        "AWS_REGION": target_env_values["AWS_REGION"]
+        or source_env_values["AWS_REGION"]
+        or "us-east-1",
+        "SOURCE_ECR_REGISTRY": (
+            request.source_ecr_registry or source_env_values["ECR_REGISTRY"]
+        ).strip(),
+        "SOURCE_ECR_REPOSITORY": (
+            request.source_ecr_repository or source_env_values["ECR_REPOSITORY"]
+        ).strip(),
+        "TARGET_ECR_REGISTRY": (
+            request.target_ecr_registry or target_env_values["ECR_REGISTRY"]
+        ).strip(),
+        "TARGET_ECR_REPOSITORY": (
+            request.target_ecr_repository or target_env_values["ECR_REPOSITORY"]
+        ).strip(),
         "SOURCE_IMAGE_TAG": (request.source_image_tag or "").strip(),
         "TARGET_IMAGE_TAG": (request.target_image_tag or "").strip(),
-        "CLIENT_AWS_ROLE_ARN": (request.client_aws_role_arn or target_env_values["CLIENT_AWS_ROLE_ARN"] or source_env_values["CLIENT_AWS_ROLE_ARN"]).strip(),
-        "SOURCE_AWS_ROLE_ARN": (request.source_aws_role_arn or source_env_values["SOURCE_AWS_ROLE_ARN"] or source_env_values["CLIENT_AWS_ROLE_ARN"]).strip(),
-        "TARGET_AWS_ROLE_ARN": (request.target_aws_role_arn or target_env_values["TARGET_AWS_ROLE_ARN"] or target_env_values["CLIENT_AWS_ROLE_ARN"]).strip(),
-        "DEV_CLUSTER_NAME": source_env_values["DEV_CLUSTER_NAME"] or target_env_values["DEV_CLUSTER_NAME"],
-        "QA_CLUSTER_NAME": source_env_values["QA_CLUSTER_NAME"] or target_env_values["QA_CLUSTER_NAME"],
-        "STAGE_CLUSTER_NAME": source_env_values["STAGE_CLUSTER_NAME"] or target_env_values["STAGE_CLUSTER_NAME"],
+        "CLIENT_AWS_ROLE_ARN": (
+            request.client_aws_role_arn
+            or target_env_values["CLIENT_AWS_ROLE_ARN"]
+            or source_env_values["CLIENT_AWS_ROLE_ARN"]
+        ).strip(),
+        "SOURCE_AWS_ROLE_ARN": (
+            request.source_aws_role_arn
+            or source_env_values["SOURCE_AWS_ROLE_ARN"]
+            or source_env_values["CLIENT_AWS_ROLE_ARN"]
+        ).strip(),
+        "TARGET_AWS_ROLE_ARN": (
+            request.target_aws_role_arn
+            or target_env_values["TARGET_AWS_ROLE_ARN"]
+            or target_env_values["CLIENT_AWS_ROLE_ARN"]
+        ).strip(),
+        "DEV_CLUSTER_NAME": source_env_values["DEV_CLUSTER_NAME"]
+        or target_env_values["DEV_CLUSTER_NAME"],
+        "QA_CLUSTER_NAME": source_env_values["QA_CLUSTER_NAME"]
+        or target_env_values["QA_CLUSTER_NAME"],
+        "STAGE_CLUSTER_NAME": source_env_values["STAGE_CLUSTER_NAME"]
+        or target_env_values["STAGE_CLUSTER_NAME"],
         "PROD_CLUSTER_NAME": target_env_values["PROD_CLUSTER_NAME"],
         "NAMESPACE_STRATEGY": target_env_values["NAMESPACE_STRATEGY"],
         "IAM_VALIDATION_MODE": target_env_values["IAM_VALIDATION_MODE"],
         "EKS_ACCESS_MODE": target_env_values["EKS_ACCESS_MODE"],
         "APP_NAMESPACE": target_env_values["APP_NAMESPACE"],
-        "DEV_NAMESPACE": source_env_values["DEV_NAMESPACE"] or target_env_values["DEV_NAMESPACE"],
-        "QA_NAMESPACE": source_env_values["QA_NAMESPACE"] or target_env_values["QA_NAMESPACE"],
-        "STAGE_NAMESPACE": source_env_values["STAGE_NAMESPACE"] or target_env_values["STAGE_NAMESPACE"],
+        "DEV_NAMESPACE": source_env_values["DEV_NAMESPACE"]
+        or target_env_values["DEV_NAMESPACE"],
+        "QA_NAMESPACE": source_env_values["QA_NAMESPACE"]
+        or target_env_values["QA_NAMESPACE"],
+        "STAGE_NAMESPACE": source_env_values["STAGE_NAMESPACE"]
+        or target_env_values["STAGE_NAMESPACE"],
         "PROD_NAMESPACE": target_env_values["PROD_NAMESPACE"],
         "SECRET_ENABLED": str(request.secret_enabled).lower(),
         "XID_ARRAY": (request.xid_array or "").strip(),
         "APPROVER": (request.approver or "").strip(),
-        "REQUIRE_APPROVAL": str(request.require_approval or target_env == "PROD").lower(),
+        "REQUIRE_APPROVAL": str(
+            request.require_approval or target_env == "PROD"
+        ).lower(),
         "NOTIFY_EMAIL": requester_notify_email,
         "NOTIFY_CC": (request.additional_notify_emails or "").strip(),
         "ENABLE_NOTIFICATIONS": str(notification_requested).lower(),
-        "SNS_TOPIC_ARN": target_env_values["SNS_TOPIC_ARN"] or source_env_values["SNS_TOPIC_ARN"] or (request.sns_topic_arn or "").strip(),
+        "SNS_TOPIC_ARN": target_env_values["SNS_TOPIC_ARN"]
+        or source_env_values["SNS_TOPIC_ARN"]
+        or (request.sns_topic_arn or "").strip(),
     }
     bool_param_names = ["SECRET_ENABLED", "REQUIRE_APPROVAL", "ENABLE_NOTIFICATIONS"]
     job_config = build_runner_job_config(
@@ -2793,11 +3562,15 @@ def create_prod_devops_pipeline(
         create_response_obj = create_response
 
     if create_response_code not in (200, 201, 202):
-        return jenkins_failure_response(f"{create_status} job '{job_name}'", create_response_obj)
+        return jenkins_failure_response(
+            f"{create_status} job '{job_name}'", create_response_obj
+        )
 
     build_response = trigger_jenkins_parameterized_build(job_name, values)
     if build_response.status_code not in (200, 201, 202):
-        return jenkins_failure_response(f"trigger build for job '{job_name}'", build_response)
+        return jenkins_failure_response(
+            f"trigger build for job '{job_name}'", build_response
+        )
 
     usage_report = report_license_usage(
         validated_license,
@@ -2831,18 +3604,36 @@ def create_prod_devops_pipeline(
         "build_response_code": build_response.status_code,
     }
 
+
 @app.post("/pipeline/trigger")
 def trigger_existing_pipeline(
     request: TriggerRequest,
-    principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER, ROLE_QA, ROLE_RELEASE_MANAGER)),
+    principal: AuthPrincipal = Depends(
+        require_roles(
+            ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER, ROLE_QA, ROLE_RELEASE_MANAGER
+        )
+    ),
 ):
     job_url = f"{JENKINS_URL}/job/{request.project_name}/api/json"
     job_check = requests.get(job_url, auth=(JENKINS_USER, JENKINS_TOKEN), verify=False)
     if job_check.status_code != 200:
-        return {"status": "Job not found", "message": f"Pipeline '{request.project_name}' does not exist."}
+        return {
+            "status": "Job not found",
+            "message": f"Pipeline '{request.project_name}' does not exist.",
+        }
     build_url = f"{JENKINS_URL}/job/{request.project_name}/build"
-    build_trigger = requests.post(build_url, headers=jenkins_headers(), auth=(JENKINS_USER, JENKINS_TOKEN), verify=False)
-    return {"status": "Build triggered", "project_name": request.project_name, "code": build_trigger.status_code}
+    build_trigger = requests.post(
+        build_url,
+        headers=jenkins_headers(),
+        auth=(JENKINS_USER, JENKINS_TOKEN),
+        verify=False,
+    )
+    return {
+        "status": "Build triggered",
+        "project_name": request.project_name,
+        "code": build_trigger.status_code,
+    }
+
 
 @app.get("/pipeline/logs/{job_name}/{build_number}")
 def get_console_logs(
@@ -2853,6 +3644,7 @@ def get_console_logs(
     log_url = f"{JENKINS_URL}/job/{job_name}/{build_number}/logText/progressiveText"
     response = requests.get(log_url, auth=(JENKINS_USER, JENKINS_TOKEN), verify=False)
     return {"build_number": build_number, "job_name": job_name, "logs": response.text}
+
 
 # vulnerabilities_store = []
 
@@ -2895,6 +3687,7 @@ def get_console_logs(
 #     db.commit()
 #     return {"status": "uploaded", "count": count}
 
+
 # GET: return only authorized vulnerabilities
 @app.get("/vulnerabilities")
 def get_vulnerabilities(
@@ -2920,6 +3713,7 @@ def get_vulnerabilities(
 
     return [serialize_security_finding(v) for v in results]
 
+
 @app.get("/security/findings")
 def get_security_findings(
     email: Optional[str] = None,
@@ -2935,12 +3729,16 @@ def get_security_findings(
         if not app_entry:
             return []
         query = query.filter(Vulnerability.application_id == app_entry.id)
-    findings = [serialize_security_finding(v) for v in query.order_by(Vulnerability.timestamp.desc()).all()]
+    findings = [
+        serialize_security_finding(v)
+        for v in query.order_by(Vulnerability.timestamp.desc()).all()
+    ]
     if category:
         findings = [f for f in findings if f.get("category") == category]
     if severity:
         findings = [f for f in findings if f.get("severity") == severity.upper()]
     return findings
+
 
 @app.delete("/vulnerabilities/clear")
 def clear_vulnerabilities(
@@ -2951,6 +3749,7 @@ def clear_vulnerabilities(
     db.commit()
     return {"status": "cleared", "deleted_records": deleted}
 
+
 @app.post("/opa/risks/")
 async def upload_opa_risks(payload: OPARiskUpload, db: Session = Depends(get_db)):
     try:
@@ -2959,7 +3758,9 @@ async def upload_opa_risks(payload: OPARiskUpload, db: Session = Depends(get_db)
 
         app_name = payload.application.strip()
         if not app_name:
-            return JSONResponse(status_code=400, content={"error": "Application name is required"})
+            return JSONResponse(
+                status_code=400, content={"error": "Application name is required"}
+            )
 
         # Ensure application exists
         app_entry = db.query(Application).filter_by(name=app_name).first()
@@ -2968,7 +3769,7 @@ async def upload_opa_risks(payload: OPARiskUpload, db: Session = Depends(get_db)
             app_entry = Application(
                 name=app_name,
                 description="Auto-created",
-                owner_email="ankur.kashyap@horizonrelevance.com"
+                owner_email="ankur.kashyap@horizonrelevance.com",
             )
             db.add(app_entry)
             db.commit()
@@ -2990,11 +3791,13 @@ async def upload_opa_risks(payload: OPARiskUpload, db: Session = Depends(get_db)
                 fixed_version=risk.remediation or "Review policy",
                 risk_score=risk.risk_score,
                 description=risk.description or risk.violation,
-                source=normalize_security_category(risk.source or "Policy Violation", risk.package_name, risk.violation),
+                source=normalize_security_category(
+                    risk.source or "Policy Violation", risk.package_name, risk.violation
+                ),
                 jenkins_job=risk.jenkins_job,
                 build_number=risk.build_number,
                 jenkins_url=risk.jenkins_url,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.utcnow(),
             )
             db.add(vuln)
             count += 1
@@ -3005,7 +3808,10 @@ async def upload_opa_risks(payload: OPARiskUpload, db: Session = Depends(get_db)
 
     except Exception as e:
         logger.exception("Failed to upload OPA risks")
-        return JSONResponse(status_code=500, content={"error": "Server error while processing OPA risks"})
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Server error while processing OPA risks"},
+        )
 
 
 def get_dynamic_fix(violation: str) -> str:
@@ -3022,6 +3828,7 @@ def get_dynamic_fix(violation: str) -> str:
         return "Set filesystem to read-only using readOnlyRootFilesystem"
     else:
         return "Review OPA policy and secure container accordingly"
+
 
 SECURITY_CATEGORY_BY_SOURCE = {
     "TRIVY": "Container Vulnerability",
@@ -3069,6 +3876,7 @@ DEPENDENCY_TARGET_MARKERS = (
     "gemfile.lock",
 )
 
+
 def looks_like_container_target(target: Optional[str]) -> bool:
     target_value = (target or "").strip().lower()
     if not target_value:
@@ -3076,6 +3884,7 @@ def looks_like_container_target(target: Optional[str]) -> bool:
     if any(marker in target_value for marker in DEPENDENCY_TARGET_MARKERS):
         return False
     return any(marker in target_value for marker in CONTAINER_TARGET_MARKERS)
+
 
 def normalize_security_category(
     source: Optional[str],
@@ -3088,35 +3897,51 @@ def normalize_security_category(
         return "Container Vulnerability"
     if source_key in SECURITY_CATEGORY_BY_SOURCE:
         return SECURITY_CATEGORY_BY_SOURCE[source_key]
-    if (package_name or "").lower().endswith("policy") or "policy" in (vulnerability_id or "").lower():
+    if (package_name or "").lower().endswith("policy") or "policy" in (
+        vulnerability_id or ""
+    ).lower():
         return "Policy Violation"
-    if "secret" in (package_name or "").lower() or "secret" in (vulnerability_id or "").lower():
+    if (
+        "secret" in (package_name or "").lower()
+        or "secret" in (vulnerability_id or "").lower()
+    ):
         return "Secret Exposure"
-    if "misconfig" in (vulnerability_id or "").lower() or "avd-" in (vulnerability_id or "").lower():
+    if (
+        "misconfig" in (vulnerability_id or "").lower()
+        or "avd-" in (vulnerability_id or "").lower()
+    ):
         return "IaC Misconfiguration"
     return "Security Finding"
 
+
 def normalize_remediation(v: Vulnerability) -> str:
     if v.fixed_version and v.fixed_version not in {"N/A", "None"}:
-        if v.fixed_version.lower().startswith(("review", "use ", "avoid ", "set ", "drop ")):
+        if v.fixed_version.lower().startswith(
+            ("review", "use ", "avoid ", "set ", "drop ")
+        ):
             return v.fixed_version
         return f"Upgrade {v.package_name or 'the affected component'} to {v.fixed_version} or later."
     if v.description:
         return get_dynamic_fix(v.description)
     return "Review the affected component, validate exploitability, and apply the recommended vendor fix."
 
+
 def serialize_security_finding(v: Vulnerability) -> dict:
-    category = normalize_security_category(v.source, v.package_name, v.vulnerability_id, v.target)
+    category = normalize_security_category(
+        v.source, v.package_name, v.vulnerability_id, v.target
+    )
     component = v.package_name or "Application"
     title = v.vulnerability_id or v.rule or "Security finding"
-    fingerprint_source = "|".join([
-        str(v.application_id or ""),
-        category,
-        component,
-        title,
-        v.target or "",
-        str(v.line or ""),
-    ])
+    fingerprint_source = "|".join(
+        [
+            str(v.application_id or ""),
+            category,
+            component,
+            title,
+            v.target or "",
+            str(v.line or ""),
+        ]
+    )
     finding_id = hashlib.sha256(fingerprint_source.encode()).hexdigest()[:16]
     return {
         "finding_id": finding_id,
@@ -3156,23 +3981,39 @@ def serialize_security_finding(v: Vulnerability) -> dict:
         },
     }
 
+
 @app.post("/register_application")
 def register_application(
     request: RegisterAppRequest,
     db: Session = Depends(get_db),
-    principal: AuthPrincipal = Depends(require_roles(ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER)),
+    principal: AuthPrincipal = Depends(
+        require_roles(ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER)
+    ),
 ):
     app_entry = db.query(Application).filter_by(name=request.name).first()
     if app_entry:
-        return JSONResponse(status_code=400, content={"error": "Application already exists"})
-    owner_email = request.owner_email if principal_has_role(principal, CATALOG_ADMIN_ROLES) else principal_email(principal)
-    app_entry = Application(name=request.name, description=request.description, owner_email=owner_email, repo_url=request.repo_url, branch=request.branch)
+        return JSONResponse(
+            status_code=400, content={"error": "Application already exists"}
+        )
+    owner_email = (
+        request.owner_email
+        if principal_has_role(principal, CATALOG_ADMIN_ROLES)
+        else principal_email(principal)
+    )
+    app_entry = Application(
+        name=request.name,
+        description=request.description,
+        owner_email=owner_email,
+        repo_url=request.repo_url,
+        branch=request.branch,
+    )
     db.add(app_entry)
     db.commit()
     db.refresh(app_entry)
     db.add(ApplicationUserAccess(user_email=owner_email, application_id=app_entry.id))
     db.commit()
     return {"status": "registered", "application_id": app_entry.id}
+
 
 @app.post("/grant_access")
 def grant_access(
@@ -3183,19 +4024,30 @@ def grant_access(
     app_entry = db.query(Application).filter_by(name=request.application).first()
     if not app_entry:
         return JSONResponse(status_code=404, content={"error": "Application not found"})
-    if not principal_has_role(principal, CATALOG_ADMIN_ROLES) and app_entry.owner_email != principal_email(principal):
+    if not principal_has_role(
+        principal, CATALOG_ADMIN_ROLES
+    ) and app_entry.owner_email != principal_email(principal):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only platform admins or application owners can grant application access.",
         )
-    existing_access = db.query(ApplicationUserAccess).filter_by(
-        user_email=request.user_email,
-        application_id=app_entry.id,
-    ).first()
+    existing_access = (
+        db.query(ApplicationUserAccess)
+        .filter_by(
+            user_email=request.user_email,
+            application_id=app_entry.id,
+        )
+        .first()
+    )
     if not existing_access:
-        db.add(ApplicationUserAccess(user_email=request.user_email, application_id=app_entry.id))
+        db.add(
+            ApplicationUserAccess(
+                user_email=request.user_email, application_id=app_entry.id
+            )
+        )
         db.commit()
     return {"status": "access granted"}
+
 
 @app.post("/upload_vulnerabilities")
 def upload_vulnerabilities(payload: UploadPayload, db: Session = Depends(get_db)):
@@ -3213,7 +4065,7 @@ def upload_vulnerabilities(payload: UploadPayload, db: Session = Depends(get_db)
                 name=payload.application,
                 description="Auto-created",
                 owner_email=payload.requestedBy or "unknown@horizonrelevance.com",
-                repo_url=repo_url
+                repo_url=repo_url,
             )
             db.add(app_entry)
             db.commit()
@@ -3232,7 +4084,9 @@ def upload_vulnerabilities(payload: UploadPayload, db: Session = Depends(get_db)
                 fixed_version=v.fixed_version,
                 risk_score=v.risk_score,
                 description=v.description,
-                source=normalize_security_category(v.source, v.package_name, v.vulnerability_id, v.target),
+                source=normalize_security_category(
+                    v.source, v.package_name, v.vulnerability_id, v.target
+                ),
                 timestamp=datetime.utcnow(),
                 line=v.line,
                 rule=v.rule,
@@ -3255,24 +4109,33 @@ def upload_vulnerabilities(payload: UploadPayload, db: Session = Depends(get_db)
             count += 1
 
         db.commit()
-        print(f"[Vulnerabilities Uploaded] Count: {count} for app: {payload.application}")
+        print(
+            f"[Vulnerabilities Uploaded] Count: {count} for app: {payload.application}"
+        )
         return {"status": "uploaded", "count": count}
 
     except Exception as e:
         print(f"[Upload Error] {str(e)}")
-        return JSONResponse(status_code=500, content={"error": "Failed to upload vulnerabilities"})  
+        return JSONResponse(
+            status_code=500, content={"error": "Failed to upload vulnerabilities"}
+        )
+
 
 def verify_github_signature(payload_body: bytes, signature_header: str) -> bool:
-    expected_signature = "sha256=" + hmac.new(
-        GITHUB_WEBHOOK_SECRET.encode(), msg=payload_body, digestmod=hashlib.sha256
-    ).hexdigest()
+    expected_signature = (
+        "sha256="
+        + hmac.new(
+            GITHUB_WEBHOOK_SECRET.encode(), msg=payload_body, digestmod=hashlib.sha256
+        ).hexdigest()
+    )
     return hmac.compare_digest(expected_signature, signature_header)
+
 
 @app.post("/webhook/github")
 async def github_webhook(
     request: Request,
     x_hub_signature_256: Optional[str] = Header(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     try:
         body = await request.body()
@@ -3280,11 +4143,12 @@ async def github_webhook(
         if not x_hub_signature_256:
             return JSONResponse(status_code=401, content={"error": "Missing signature"})
 
-        expected_signature = "sha256=" + hmac.new(
-            GITHUB_WEBHOOK_SECRET.encode(),
-            msg=body,
-            digestmod=hashlib.sha256
-        ).hexdigest()
+        expected_signature = (
+            "sha256="
+            + hmac.new(
+                GITHUB_WEBHOOK_SECRET.encode(), msg=body, digestmod=hashlib.sha256
+            ).hexdigest()
+        )
 
         if not hmac.compare_digest(expected_signature, x_hub_signature_256):
             print(f"[Signature Mismatch] Expected: {expected_signature}")
@@ -3293,16 +4157,27 @@ async def github_webhook(
         payload = json.loads(body)
         repo_url = payload.get("repository", {}).get("clone_url")
         branch_ref = payload.get("ref", "")
-        branch = branch_ref.split("/")[-1] if branch_ref.startswith("refs/heads/") else "main"
+        branch = (
+            branch_ref.split("/")[-1]
+            if branch_ref.startswith("refs/heads/")
+            else "main"
+        )
 
         print(f"[Webhook] Repo: {repo_url}, Branch: {branch}")
 
-        app_match = db.query(Application).filter(Application.repo_url == repo_url, Application.branch == branch).first()
+        app_match = (
+            db.query(Application)
+            .filter(Application.repo_url == repo_url, Application.branch == branch)
+            .first()
+        )
         if not app_match:
             print(f"[Fallback] Trying to match repo only without branch: {repo_url}")
             app_match = db.query(Application).filter_by(repo_url=repo_url).first()
             if not app_match:
-                return JSONResponse(status_code=404, content={"error": "No matching pipeline found for repo"})
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "No matching pipeline found for repo"},
+                )
 
         job_name = app_match.name
         jenkins_url = f"{JENKINS_URL}/job/{job_name}/buildWithParameters"
@@ -3313,7 +4188,7 @@ async def github_webhook(
             "CREDENTIALS_ID": "github-token",
             "ENABLE_SONARQUBE": "true",
             "ENABLE_OPA": "true",
-            "ENABLE_TRIVY": "true"
+            "ENABLE_TRIVY": "true",
         }
 
         response = jenkins_post(
@@ -3325,12 +4200,14 @@ async def github_webhook(
         return {
             "status": "Triggered Jenkins job",
             "job": job_name,
-            "jenkins_code": response.status_code
+            "jenkins_code": response.status_code,
         }
 
     except Exception as e:
         print(f"[Webhook Error] {str(e)}")
-        return JSONResponse(status_code=500, content={"error": "Failed to process webhook"})
+        return JSONResponse(
+            status_code=500, content={"error": "Failed to process webhook"}
+        )
 
 
 # from fastapi import FastAPI, Request

@@ -1,0 +1,36 @@
+services:
+  backend:
+    build:
+      context: .
+    image: horizon-sdlc-backend:local
+    environment:
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-local-dev-webhook-secret}
+      BACKEND_SESSION_SECRET: ${BACKEND_SESSION_SECRET:-local-dev-session-secret}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,https://horizonrelevance.com/pipeline}
+      DATABASE_PATH: ${DATABASE_PATH:-/app/data/app.db}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/app.db}
+      LOCAL_DEV_AUTH: ${LOCAL_DEV_AUTH:-true}
+      LOCAL_DEV_AUTH_ROLES: ${LOCAL_DEV_AUTH_ROLES:-platform-admin}
+      JENKINS_EXECUTION_MODE: ${JENKINS_EXECUTION_MODE:-runner}
+      HORIZON_RUNNER_URL: ${HORIZON_RUNNER_URL:-http://horizon-runner:8080}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - backend-data:/app/data
+
+  frontend:
+    build:
+      context: ../horizon-sdlc-frontend
+      args:
+        REACT_APP_API_BASE_URL: ${REACT_APP_API_BASE_URL:-/pipeline/api}
+    image: horizon-sdlc-frontend:local
+    environment:
+      BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-http://backend:8000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend-data:

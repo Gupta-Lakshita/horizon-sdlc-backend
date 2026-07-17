@@ -91,3 +91,84 @@ class EnvironmentCatalog(Base):
     sns_topic_arn = Column(String, nullable=True)
     is_active = Column(Integer, default=1)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ReleaseRun(Base):
+    __tablename__ = "release_runs"
+
+    id = Column(Integer, primary_key=True)
+    release_id = Column(String, unique=True, nullable=False, index=True)
+    application = Column(String, nullable=False)
+    environment = Column(String, nullable=False)
+    build_number = Column(Integer, nullable=False)
+    build_time = Column(String, nullable=False)
+    commit_sha = Column(String, nullable=False)
+    branch = Column(String, nullable=False)
+
+    artifact = relationship("Artifact", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    sbom = relationship("SBOM", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    signature = relationship("Signature", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    provenance = relationship("Provenance", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    scan_evidence = relationship("ScanEvidence", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    policy_evaluation = relationship("PolicyEvaluation", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    promotion = relationship("Promotion", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+
+
+class ReleaseEvidenceBase:
+    id = Column(Integer, primary_key=True)
+    release_run_id = Column(Integer, ForeignKey("release_runs.id"), unique=True, nullable=False)
+
+
+class Artifact(ReleaseEvidenceBase, Base):
+    __tablename__ = "release_artifacts"
+    image_name = Column(String, nullable=False)
+    image_tag = Column(String, nullable=False)
+    image_digest = Column(String, nullable=False)
+    registry = Column(String, nullable=False)
+    release_run = relationship("ReleaseRun", back_populates="artifact")
+
+
+class SBOM(ReleaseEvidenceBase, Base):
+    __tablename__ = "release_sboms"
+    status = Column(String, nullable=False)
+    format = Column(String, nullable=True)
+    release_run = relationship("ReleaseRun", back_populates="sbom")
+
+
+class Signature(ReleaseEvidenceBase, Base):
+    __tablename__ = "release_signatures"
+    status = Column(String, nullable=False)
+    provider = Column(String, nullable=False)
+    release_run = relationship("ReleaseRun", back_populates="signature")
+
+
+class Provenance(ReleaseEvidenceBase, Base):
+    __tablename__ = "release_provenance"
+    status = Column(String, nullable=False)
+    slsa_level = Column(String, nullable=True)
+    release_run = relationship("ReleaseRun", back_populates="provenance")
+
+
+class ScanEvidence(ReleaseEvidenceBase, Base):
+    __tablename__ = "release_scan_evidence"
+    status = Column(String, nullable=False)
+    critical = Column(Integer, nullable=False)
+    high = Column(Integer, nullable=False)
+    release_run = relationship("ReleaseRun", back_populates="scan_evidence")
+
+
+class PolicyEvaluation(ReleaseEvidenceBase, Base):
+    __tablename__ = "release_policy_evaluations"
+    overall_decision = Column(String, nullable=False)
+    passed_rules = Column(Integer, nullable=False)
+    warning_rules = Column(Integer, nullable=False)
+    blocked_rules = Column(Integer, nullable=False)
+    release_run = relationship("ReleaseRun", back_populates="policy_evaluation")
+
+
+class Promotion(ReleaseEvidenceBase, Base):
+    __tablename__ = "release_promotions"
+    current_environment = Column(String, nullable=False)
+    promotion_eligibility = Column(String, nullable=False)
+    promotion_history = Column(Text, nullable=False)
+    release_run = relationship("ReleaseRun", back_populates="promotion")

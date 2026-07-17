@@ -6,4 +6,3 @@ requests
 cryptography
 ldap3
 sqlalchemy
-sqlalchemy.orm

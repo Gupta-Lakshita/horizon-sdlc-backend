@@ -39,12 +39,8 @@ from enterprise.licensing import (
 )
 
 from routers.release_trust import router as release_trust_router
+from release_trust_repository import seed_release_trust_data
 
-<<<<<<< HEAD
-DATABASE_PATH = os.getenv("DATABASE_PATH", "/app/data/app.db")
-=======
-DATABASE_PATH = "/app/data/app.db"  # This path must match your Helm `mountPath`
->>>>>>> 003d5a96fa1f374fc3981e86a6d8dc94d9e33a72
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -54,6 +50,7 @@ app = FastAPI(root_path="/pipeline/api")
 app.include_router(release_trust_router)
 
 Base.metadata.create_all(bind=engine)
+seed_release_trust_data()
 
 
 def ensure_environment_catalog_schema() -> None:
@@ -130,7 +127,6 @@ RBAC_ENFORCEMENT_ENABLED = (
     os.getenv("BACKEND_RBAC_ENFORCEMENT_ENABLED", "true").strip().lower() == "true"
 )
 SESSION_TTL_SECONDS = int(os.getenv("BACKEND_SESSION_TTL_SECONDS", "43200"))
-<<<<<<< HEAD
 LOCAL_DEV_AUTH_ENABLED = (
     os.getenv("LOCAL_DEV_AUTH", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
 )
@@ -139,11 +135,6 @@ LOCAL_DEV_AUTH_ROLES = [
     for role in os.getenv("LOCAL_DEV_AUTH_ROLES", "platform-admin").split(",")
     if role.strip()
 ]
-
-=======
-LOCAL_DEV_AUTH = os.getenv("LOCAL_DEV_AUTH", "false").strip().lower() == "true"
-LOCAL_DEV_AUTH_ROLES = os.getenv("LOCAL_DEV_AUTH_ROLES", "platform-admin")
->>>>>>> 003d5a96fa1f374fc3981e86a6d8dc94d9e33a72
 
 def jenkins_headers(content_type: Optional[str] = None):
     headers = {}
@@ -2591,31 +2582,9 @@ async def login(request: Request):
     username = body.get("username")
     password = body.get("password")
     if not username or not password:
-<<<<<<< HEAD
         return JSONResponse(
             status_code=400, content={"error": "Username and password required"}
         )
-=======
-        return JSONResponse(status_code=400, content={"error": "Username and password required"})
-    if LOCAL_DEV_AUTH:
-        roles = normalize_roles(LOCAL_DEV_AUTH_ROLES.split(","))
-        principal = AuthPrincipal(
-            username=username,
-            email=f"{username}@local.dev",
-            full_name=username,
-            roles=roles,
-            groups=["local-dev"],
-        )
-        return {
-            "username": username,
-            "fullName": username,
-            "email": principal.email,
-            "roles": roles,
-            "groups": principal.groups,
-            "token": create_session_token(principal),
-            "sessionExpiresIn": SESSION_TTL_SECONDS,
-        }
->>>>>>> 003d5a96fa1f374fc3981e86a6d8dc94d9e33a72
     try:
         server = Server(LDAP_SERVER, get_info=ALL)
         search_conn = Connection(

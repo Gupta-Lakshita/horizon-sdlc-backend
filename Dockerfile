@@ -23,7 +23,7 @@ RUN apt-get update && \
     
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
-COPY main.py database.py models.py schemas.py release_trust_repository.py ./
+COPY main.py database.py models.py schemas.py release_trust_repository.py release_trust_service.py release_trust_runner.py release_trust_schemas.py ./
 COPY enterprise ./enterprise
 COPY routers ./routers
 RUN useradd --create-home --uid 10001 appuser && \

@@ -19,13 +19,22 @@ _LOAD_OPTIONS = [joinedload(getattr(ReleaseRun, name)) for name in ("artifact", 
 
 
 def _detail(run: ReleaseRun) -> Dict[str, Any]:
-    return {"release": {key: getattr(run, key) for key in ("release_id", "application", "environment", "build_number", "build_time", "commit_sha", "branch")}, "artifact": {key: getattr(run.artifact, key) for key in ("image_name", "image_tag", "image_digest", "registry")}, "sbom": {key: getattr(run.sbom, key) for key in ("status", "format")}, "signature": {key: getattr(run.signature, key) for key in ("status", "provider")}, "provenance": {key: getattr(run.provenance, key) for key in ("status", "slsa_level")}, "scan_evidence": {key: getattr(run.scan_evidence, key) for key in ("status", "critical", "high")}, "policy_evaluation": {key: getattr(run.policy_evaluation, key) for key in ("overall_decision", "passed_rules", "warning_rules", "blocked_rules")}, "promotion": {"current_environment": run.promotion.current_environment, "promotion_eligibility": run.promotion.promotion_eligibility, "promotion_history": json.loads(run.promotion.promotion_history)}}
+    policy = {key: getattr(run.policy_evaluation, key) for key in ("overall_decision", "passed_rules", "warning_rules", "blocked_rules")}
+    if run.policy_evaluation.summary is not None:
+        policy["status"] = run.policy_evaluation.overall_decision.upper()
+        policy["summary"] = run.policy_evaluation.summary
+        policy["rules"] = json.loads(run.policy_evaluation.rules or "[]")
+    return {"release": {key: getattr(run, key) for key in ("release_id", "application", "environment", "build_number", "build_time", "commit_sha", "branch")}, "artifact": {key: getattr(run.artifact, key) for key in ("image_name", "image_tag", "image_digest", "registry")}, "sbom": {key: getattr(run.sbom, key) for key in ("status", "format")}, "signature": {key: getattr(run.signature, key) for key in ("status", "provider")}, "provenance": {key: getattr(run.provenance, key) for key in ("status", "slsa_level")}, "scan_evidence": {key: getattr(run.scan_evidence, key) for key in ("status", "critical", "high")}, "policy_evaluation": policy, "promotion": {"current_environment": run.promotion.current_environment, "promotion_eligibility": run.promotion.promotion_eligibility, "promotion_history": json.loads(run.promotion.promotion_history)}}
 
 
 def _add_release(session, payload: Dict[str, Any]) -> ReleaseRun:
     run = ReleaseRun(**payload["release"])
     session.add(run); session.flush()
-    run.artifact = Artifact(**payload["artifact"]); run.sbom = SBOM(**payload["sbom"]); run.signature = Signature(**payload["signature"]); run.provenance = Provenance(**payload["provenance"]); run.scan_evidence = ScanEvidence(**payload["scan_evidence"]); run.policy_evaluation = PolicyEvaluation(**payload["policy_evaluation"])
+    policy = dict(payload["policy_evaluation"])
+    policy["overall_decision"] = policy.get("overall_decision", policy.get("status", "pending")).lower()
+    policy.pop("status", None)
+    policy["rules"] = json.dumps(policy["rules"]) if policy.get("rules") is not None else None
+    run.artifact = Artifact(**payload["artifact"]); run.sbom = SBOM(**payload["sbom"]); run.signature = Signature(**payload["signature"]); run.provenance = Provenance(**payload["provenance"]); run.scan_evidence = ScanEvidence(**payload["scan_evidence"]); run.policy_evaluation = PolicyEvaluation(**policy)
     promotion = dict(payload["promotion"]); promotion["promotion_history"] = json.dumps(promotion["promotion_history"]); run.promotion = Promotion(**promotion)
     return run
 

@@ -163,6 +163,8 @@ class PolicyEvaluation(ReleaseEvidenceBase, Base):
     passed_rules = Column(Integer, nullable=False)
     warning_rules = Column(Integer, nullable=False)
     blocked_rules = Column(Integer, nullable=False)
+    summary = Column(Text, nullable=True)
+    rules = Column(Text, nullable=True)
     release_run = relationship("ReleaseRun", back_populates="policy_evaluation")
 
 

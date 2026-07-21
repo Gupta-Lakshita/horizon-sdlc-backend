@@ -38,7 +38,7 @@ All endpoints are relative to `/pipeline/api`.
 | `GET` | `/release-trust/runs` | List dashboard-ready release summaries. |
 | `GET` | `/release-trust/runs/{release_id}` | Retrieve the complete evidence record for a release. |
 
-`POST /release-trust/runs` requires these top-level evidence sections: `release`, `artifact`, `sbom`, `signature`, `provenance`, `scan_evidence`, `policy_evaluation`, and `promotion`. The `release` section requires release ID, application, environment, build metadata, commit SHA, and branch. A duplicate `release_id` returns `409`; malformed or incomplete requests return FastAPI validation errors (`422`).
+`POST /release-trust/runs` requires the evidence sections `release`, `artifact`, `sbom`, `signature`, `provenance`, `scan_evidence`, and `promotion`. The legacy `policy_evaluation` section remains accepted when supplied, but is optional and always replaced by the engine result. The `release` section requires release ID, application, environment, build metadata, commit SHA, and branch. A duplicate `release_id` returns `409`; malformed or incomplete requests return FastAPI validation errors (`422`).
 
 Use `simulated_release_trust_payload()` from `release_trust_runner.py` to produce development-only payloads. It does not execute CI/CD systems, generate real SBOMs or signatures, or verify policy.
 
@@ -49,11 +49,14 @@ The frozen evidence model and existing GET response contracts are preserved. Ing
 ```text
 router POST /release-trust/runs
   -> service.ingest_release_trust(payload)
-  -> repository.create_release(payload)
+  -> PolicyEngine.evaluate(evidence)
+  -> repository.create_release(payload + evaluation)
   -> SQLite transaction commit
 ```
 
-The router validates the request shape through `ReleaseTrustPayload` and delegates ingestion to the service. The service rejects duplicate IDs and incomplete evidence, then calls the repository. Only `release_trust_repository.py` constructs SQLAlchemy `ReleaseRun`, `Artifact`, `SBOM`, `Signature`, `Provenance`, `ScanEvidence`, `PolicyEvaluation`, and `Promotion` records and commits the transaction. API routes do not access SQLAlchemy models directly.
+The router validates the request shape through `ReleaseTrustPayload` and delegates ingestion to the service. The service rejects duplicate IDs and incomplete evidence, evaluates the collected evidence through the reusable `PolicyEngine`, then calls the repository. Only `release_trust_repository.py` constructs SQLAlchemy `ReleaseRun`, `Artifact`, `SBOM`, `Signature`, `Provenance`, `ScanEvidence`, `PolicyEvaluation`, and `Promotion` records and commits the transaction. API routes do not access SQLAlchemy models directly. The submitted legacy policy counts are accepted for compatibility but are replaced by the engine result.
+
+The engine returns `status`, `summary`, and per-rule results. The existing policy decision and rule-count fields remain available, and structured rules are persisted in the policy evaluation section for the detail endpoint.
 
 ## Simulated ingestion example
 

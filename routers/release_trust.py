@@ -1,7 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
-from release_trust_repository import get_release_by_id, get_release_runs
-from release_trust_service import ingest_release_trust
+from release_trust_repository import get_release_runs
+from release_trust_service import get_release_trust_detail, ingest_release_trust
 from release_trust_schemas import ReleaseTrustPayload
 
 
@@ -21,7 +21,4 @@ def list_release_trust_runs():
 
 @router.get("/runs/{release_id}")
 def get_release_trust_run(release_id: str):
-    release = get_release_by_id(release_id)
-    if release is None:
-        raise HTTPException(status_code=404, detail="Release Trust run not found")
-    return release
+    return get_release_trust_detail(release_id)

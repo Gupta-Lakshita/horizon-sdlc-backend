@@ -43,10 +43,15 @@ class ScanEvidence(BaseModel):
 
 
 class PolicyEvaluation(BaseModel):
-    overall_decision: str = Field(min_length=1)
-    passed_rules: int
-    warning_rules: int
-    blocked_rules: int
+    # Legacy fields remain accepted for existing clients; the service replaces
+    # them with the engine-generated evaluation before persistence.
+    overall_decision: str = Field(default="pending", min_length=1)
+    passed_rules: int = 0
+    warning_rules: int = 0
+    blocked_rules: int = 0
+    status: Optional[str] = None
+    summary: Optional[str] = None
+    rules: Optional[List[dict]] = None
 
 
 class Promotion(BaseModel):
@@ -62,5 +67,5 @@ class ReleaseTrustPayload(BaseModel):
     signature: SignatureEvidence
     provenance: ProvenanceEvidence
     scan_evidence: ScanEvidence
-    policy_evaluation: PolicyEvaluation
+    policy_evaluation: Optional[PolicyEvaluation] = None
     promotion: Promotion

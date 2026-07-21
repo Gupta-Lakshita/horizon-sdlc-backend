@@ -50,6 +50,22 @@ app = FastAPI(root_path="/pipeline/api")
 app.include_router(release_trust_router)
 
 Base.metadata.create_all(bind=engine)
+def ensure_release_trust_policy_schema() -> None:
+    """Add structured policy columns to Phase 6 SQLite databases in place."""
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(release_policy_evaluations)")).fetchall()
+        }
+        for column, ddl in {
+            "summary": "ALTER TABLE release_policy_evaluations ADD COLUMN summary TEXT",
+            "rules": "ALTER TABLE release_policy_evaluations ADD COLUMN rules TEXT",
+        }.items():
+            if column not in columns:
+                connection.execute(text(ddl))
+
+
+ensure_release_trust_policy_schema()
 seed_release_trust_data()
 
 

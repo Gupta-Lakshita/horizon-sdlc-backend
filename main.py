@@ -39,7 +39,8 @@ from enterprise.licensing import (
 )
 
 from routers.release_trust import router as release_trust_router
-from release_trust_repository import seed_release_trust_data
+from release_trust_repository import backfill_policy_evaluations, seed_release_trust_data
+from policy_engine import default_policy_engine
 
 
 # Setup logging
@@ -67,6 +68,7 @@ def ensure_release_trust_policy_schema() -> None:
 
 ensure_release_trust_policy_schema()
 seed_release_trust_data()
+backfill_policy_evaluations(default_policy_engine)
 
 
 def ensure_environment_catalog_schema() -> None:

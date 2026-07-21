@@ -34,3 +34,19 @@ def test_policy_engine_blocks_for_missing_evidence_and_critical_vulnerability():
     ))
     assert result["status"] == BLOCK
     assert result["blocked_rules"] == 4
+
+
+def test_policy_engine_thresholds_and_failed_evidence_are_deterministic():
+    engine = PolicyEngine()
+    passing = engine.evaluate(evidence(scan_evidence={"critical": 0, "high": 0}))
+    warning = engine.evaluate(evidence(scan_evidence={"critical": 0, "high": 1}))
+    blocking = engine.evaluate(evidence(
+        sbom={"status": "failed"}, provenance={"status": "failed"},
+        scan_evidence={"critical": 1, "high": 0},
+    ))
+
+    assert passing["status"] == PASS
+    assert warning["status"] == WARN
+    assert blocking["status"] == BLOCK
+    assert len(passing["rules"]) == 6
+    assert passing == engine.evaluate(evidence(scan_evidence={"critical": 0, "high": 0}))

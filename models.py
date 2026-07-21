@@ -112,6 +112,7 @@ class ReleaseRun(Base):
     scan_evidence = relationship("ScanEvidence", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
     policy_evaluation = relationship("PolicyEvaluation", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
     promotion = relationship("Promotion", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    promotion_decision = relationship("PromotionDecision", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
 
 
 class ReleaseEvidenceBase:
@@ -174,3 +175,16 @@ class Promotion(ReleaseEvidenceBase, Base):
     promotion_eligibility = Column(String, nullable=False)
     promotion_history = Column(Text, nullable=False)
     release_run = relationship("ReleaseRun", back_populates="promotion")
+
+
+class PromotionDecision(Base):
+    __tablename__ = "release_promotion_decisions"
+
+    id = Column(Integer, primary_key=True)
+    release_run_id = Column(Integer, ForeignKey("release_runs.id"), unique=True, nullable=False)
+    promotion_status = Column(String, nullable=False)
+    policy_status = Column(String, nullable=False)
+    reason = Column(Text, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    actor = Column(String, nullable=False, default="system")
+    release_run = relationship("ReleaseRun", back_populates="promotion_decision")

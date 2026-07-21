@@ -11,6 +11,8 @@ from routers.release_trust import (
     get_release_trust_run,
     list_release_trust_runs,
 )
+from policy_engine import PolicyEngine
+from release_trust_repository import backfill_policy_evaluations
 
 
 def test_post_ignores_client_supplied_policy_evaluation_and_persists_engine_result():
@@ -66,4 +68,25 @@ def test_post_ignores_client_supplied_policy_evaluation_and_persists_engine_resu
         assert persisted["policy_evaluation"] == policy
         assert list_release_trust_runs()[0]["policy_status"] == "pass"
 
+    engine.dispose()
+
+
+def test_legacy_rows_are_backfilled_with_the_full_computed_policy():
+    engine = create_engine("sqlite://")
+    test_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(bind=engine)
+    legacy = {
+        "release": {"release_id": "legacy-policy-test", "application": "app", "environment": "dev", "build_number": 1, "build_time": "2026-07-20T00:00:00Z", "commit_sha": "a1b2c3d4", "branch": "main"},
+        "artifact": {"image_name": "app", "image_tag": "1", "image_digest": "sha256:" + "1" * 64, "registry": "test"},
+        "sbom": {"status": "generated", "format": "spdx-json"}, "signature": {"status": "verified", "provider": "cosign"},
+        "provenance": {"status": "verified", "slsa_level": "2"}, "scan_evidence": {"status": "pass", "critical": 0, "high": 0},
+        "policy_evaluation": {"overall_decision": "warn", "passed_rules": 0, "warning_rules": 99, "blocked_rules": 0},
+        "promotion": {"current_environment": "dev", "promotion_eligibility": "eligible", "promotion_history": [{"environment": "dev"}]},
+    }
+    with patch.object(repository, "SessionLocal", test_session_local):
+        repository.create_release(legacy)
+        backfill_policy_evaluations(PolicyEngine())
+        stored = get_release_trust_run("legacy-policy-test")
+        assert stored["policy_evaluation"] == PolicyEngine().evaluate(stored)
+        assert list_release_trust_runs()[0]["policy_status"] == "pass"
     engine.dispose()

@@ -8,16 +8,24 @@ BLOCK = "BLOCK"
 
 
 def _status(evidence: Dict[str, Any], section: str) -> str:
-    return str(evidence.get(section, {}).get("status", "")).strip().lower()
+    """Return a normalized evidence status without treating null as evidence."""
+    value = (evidence.get(section) or {}).get("status")
+    return str(value or "").strip().lower()
+
+
+_ABSENT_OR_FAILED = {"", "missing", "absent", "none", "failed", "invalid"}
 
 
 class PolicyEngine:
     """Evaluate Release Trust evidence without persistence or API concerns."""
 
     def evaluate(self, evidence: Dict[str, Any]) -> Dict[str, Any]:
-        sbom_exists = _status(evidence, "sbom") not in {"", "missing", "absent", "none"}
+        # "generated", "available", and "verified" are all evidence; a failed
+        # collection/verification is not. Signature verification is deliberately
+        # stricter and must be exactly "verified".
+        sbom_exists = _status(evidence, "sbom") not in _ABSENT_OR_FAILED
         signature_verified = _status(evidence, "signature") == "verified"
-        provenance_exists = _status(evidence, "provenance") not in {"", "missing", "absent", "none"}
+        provenance_exists = _status(evidence, "provenance") not in _ABSENT_OR_FAILED
         scan = evidence.get("scan_evidence") or {}
         critical = int(scan.get("critical", 0) or 0)
         high = int(scan.get("high", 0) or 0)

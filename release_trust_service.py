@@ -3,8 +3,9 @@ from typing import Dict, Any
 
 from fastapi import HTTPException
 
-from release_trust_repository import create_release, get_release_by_id
+from release_trust_repository import create_promotion_decision, create_release, get_release_by_id
 from policy_engine import PolicyEngine
+from promotion_engine import PromotionEngine
 
 
 REQUIRED_SECTIONS = (
@@ -13,6 +14,7 @@ REQUIRED_SECTIONS = (
 )
 
 policy_engine = PolicyEngine()
+promotion_engine = PromotionEngine()
 
 
 def ingest_release_trust(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -52,10 +54,27 @@ def get_release_trust_detail(release_id: str) -> Dict[str, Any]:
 
     policy = release.setdefault("policy_evaluation", {})
     if not policy.get("rules"):
-        computed_evaluation = policy_engine.evaluate(release)
-        policy.update({
-            "status": computed_evaluation["status"],
-            "summary": computed_evaluation["summary"],
-            "rules": computed_evaluation["rules"],
-        })
+        # A process started before the migration can still encounter a legacy
+        # row. Return one internally consistent computed object; normal app
+        # startup persists this same value through the repository backfill.
+        release["policy_evaluation"] = policy_engine.evaluate(release)
     return release
+
+
+def request_promotion(release_id: str, actor: str = "system") -> Dict[str, Any]:
+    """Apply the deployment gate to the persisted policy; never request policy input."""
+    if not release_id or not release_id.strip():
+        raise HTTPException(status_code=422, detail="release_id is required")
+    release = get_release_by_id(release_id)
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release Trust run not found")
+    try:
+        decision = promotion_engine.evaluate(release["policy_evaluation"].get("overall_decision"))
+        persisted = create_promotion_decision(release_id, decision, actor or "system")
+    except ValueError as exc:
+        if str(exc) == "promotion already exists":
+            raise HTTPException(status_code=409, detail="promotion already exists") from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if persisted is None:
+        raise HTTPException(status_code=404, detail="Release Trust run not found")
+    return persisted

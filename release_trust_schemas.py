@@ -38,8 +38,8 @@ class ProvenanceEvidence(BaseModel):
 
 class ScanEvidence(BaseModel):
     status: str = Field(min_length=1)
-    critical: int
-    high: int
+    critical: int = Field(ge=0)
+    high: int = Field(ge=0)
 
 
 class PolicyEvaluation(BaseModel):
@@ -69,3 +69,11 @@ class ReleaseTrustPayload(BaseModel):
     scan_evidence: ScanEvidence
     policy_evaluation: Optional[PolicyEvaluation] = None
     promotion: Promotion
+
+
+class PromotionRequest(BaseModel):
+    release_id: str = Field(min_length=1)
+    actor: str = Field(default="system", min_length=1)
+    # Accepted only to demonstrate backward-compatible rejection of forged
+    # decisions; the router and service intentionally never read it.
+    promotion_status: Optional[str] = None

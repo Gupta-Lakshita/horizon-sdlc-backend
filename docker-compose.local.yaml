@@ -9,6 +9,7 @@ services:
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,https://horizonrelevance.com/pipeline}
       DATABASE_PATH: ${DATABASE_PATH:-/app/data/app.db}
       DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/app.db}
+      EVIDENCE_DATA_PATH: ${EVIDENCE_DATA_PATH:-/app/data/evidence}
       LOCAL_DEV_AUTH: ${LOCAL_DEV_AUTH:-true}
       LOCAL_DEV_AUTH_ROLES: ${LOCAL_DEV_AUTH_ROLES:-platform-admin}
       JENKINS_EXECUTION_MODE: ${JENKINS_EXECUTION_MODE:-runner}

@@ -1,5 +1,5 @@
 # Stage 1: Builder
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
@@ -23,9 +23,10 @@ RUN apt-get update && \
     
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
-COPY main.py database.py models.py schemas.py policy_engine.py release_trust_repository.py release_trust_service.py release_trust_runner.py release_trust_schemas.py ./
-COPY enterprise ./enterprise
-COPY routers ./routers
+# Copy the complete (filtered) backend source tree.  Keeping an allow-list of
+# individual modules here caused Phase 8's promotion_engine.py to be omitted
+# from the runtime image; this also ensures future engines and services ship.
+COPY . ./
 RUN useradd --create-home --uid 10001 appuser && \
     mkdir -p /app/data && \
     chown -R appuser:appuser /app

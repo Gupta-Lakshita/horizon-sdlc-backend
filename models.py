@@ -104,6 +104,12 @@ class ReleaseRun(Base):
     build_time = Column(String, nullable=False)
     commit_sha = Column(String, nullable=False)
     branch = Column(String, nullable=False)
+    # Phase 9: evidence bodies live in ObjectStore; these are opaque references.
+    sbom_reference = Column(String, nullable=True)
+    signature_reference = Column(String, nullable=True)
+    provenance_reference = Column(String, nullable=True)
+    scan_reference = Column(String, nullable=True)
+    bundle_reference = Column(String, nullable=True)
 
     artifact = relationship("Artifact", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
     sbom = relationship("SBOM", back_populates="release_run", uselist=False, cascade="all, delete-orphan")

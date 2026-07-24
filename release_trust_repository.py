@@ -6,6 +6,7 @@ from sqlalchemy.orm import joinedload
 
 from database import SessionLocal
 from models import Artifact, PolicyEvaluation, Promotion, PromotionDecision, Provenance, ReleaseRun, SBOM, ScanEvidence, Signature
+from storage.object_store import ObjectStore
 
 
 SEED_RELEASES = [
@@ -18,7 +19,29 @@ SEED_RELEASES = [
 _LOAD_OPTIONS = [joinedload(getattr(ReleaseRun, name)) for name in ("artifact", "sbom", "signature", "provenance", "scan_evidence", "policy_evaluation", "promotion", "promotion_decision")]
 
 
-def _detail(run: ReleaseRun) -> Dict[str, Any]:
+def _evidence(run: ReleaseRun, object_store: Optional[ObjectStore]) -> Dict[str, Dict[str, Any]]:
+    """Hydrate Phase 9 references, while retaining reads of pre-Phase-9 rows."""
+    references = {
+        "sbom": run.sbom_reference,
+        "signature": run.signature_reference,
+        "provenance": run.provenance_reference,
+        "scan_evidence": run.scan_reference,
+    }
+    if any(references.values()):
+        if object_store is None:
+            raise RuntimeError("an ObjectStore is required to hydrate evidence references")
+        if not all(references.values()):
+            raise RuntimeError("stored release has incomplete evidence references")
+        return {name: object_store.download_json(reference) for name, reference in references.items()}
+    return {
+        "sbom": {key: getattr(run.sbom, key) for key in ("status", "format")},
+        "signature": {key: getattr(run.signature, key) for key in ("status", "provider")},
+        "provenance": {key: getattr(run.provenance, key) for key in ("status", "slsa_level")},
+        "scan_evidence": {key: getattr(run.scan_evidence, key) for key in ("status", "critical", "high")},
+    }
+
+
+def _detail(run: ReleaseRun, object_store: Optional[ObjectStore] = None) -> Dict[str, Any]:
     policy = {key: getattr(run.policy_evaluation, key) for key in ("overall_decision", "passed_rules", "warning_rules", "blocked_rules")}
     if run.policy_evaluation.summary is not None:
         policy["status"] = run.policy_evaluation.overall_decision.upper()
@@ -29,17 +52,24 @@ def _detail(run: ReleaseRun) -> Dict[str, Any]:
         decision = {key: getattr(run.promotion_decision, key) for key in ("promotion_status", "policy_status", "reason", "timestamp", "actor")}
         decision["timestamp"] = decision["timestamp"].isoformat()
         decision["deployment_permitted"] = decision["promotion_status"] == "ALLOW"
-    return {"release": {key: getattr(run, key) for key in ("release_id", "application", "environment", "build_number", "build_time", "commit_sha", "branch")}, "artifact": {key: getattr(run.artifact, key) for key in ("image_name", "image_tag", "image_digest", "registry")}, "sbom": {key: getattr(run.sbom, key) for key in ("status", "format")}, "signature": {key: getattr(run.signature, key) for key in ("status", "provider")}, "provenance": {key: getattr(run.provenance, key) for key in ("status", "slsa_level")}, "scan_evidence": {key: getattr(run.scan_evidence, key) for key in ("status", "critical", "high")}, "policy_evaluation": policy, "promotion": {"current_environment": run.promotion.current_environment, "promotion_eligibility": run.promotion.promotion_eligibility, "promotion_history": json.loads(run.promotion.promotion_history)}, "promotion_decision": decision}
+    evidence = _evidence(run, object_store)
+    return {"release": {key: getattr(run, key) for key in ("release_id", "application", "environment", "build_number", "build_time", "commit_sha", "branch")}, "artifact": {key: getattr(run.artifact, key) for key in ("image_name", "image_tag", "image_digest", "registry")}, **evidence, "policy_evaluation": policy, "promotion": {"current_environment": run.promotion.current_environment, "promotion_eligibility": run.promotion.promotion_eligibility, "promotion_history": json.loads(run.promotion.promotion_history)}, "promotion_decision": decision}
 
 
 def _add_release(session, payload: Dict[str, Any]) -> ReleaseRun:
-    run = ReleaseRun(**payload["release"])
+    references = payload.get("evidence_references")
+    run = ReleaseRun(**payload["release"], **(references or {}))
     session.add(run); session.flush()
     policy = dict(payload["policy_evaluation"])
     policy["overall_decision"] = policy.get("overall_decision", policy.get("status", "pending")).lower()
     policy.pop("status", None)
     policy["rules"] = json.dumps(policy["rules"]) if policy.get("rules") is not None else None
-    run.artifact = Artifact(**payload["artifact"]); run.sbom = SBOM(**payload["sbom"]); run.signature = Signature(**payload["signature"]); run.provenance = Provenance(**payload["provenance"]); run.scan_evidence = ScanEvidence(**payload["scan_evidence"]); run.policy_evaluation = PolicyEvaluation(**policy)
+    run.artifact = Artifact(**payload["artifact"])
+    # Only legacy callers/seed data persist evidence payloads in SQLite.
+    if not references:
+        run.sbom = SBOM(**payload["sbom"]); run.signature = Signature(**payload["signature"])
+        run.provenance = Provenance(**payload["provenance"]); run.scan_evidence = ScanEvidence(**payload["scan_evidence"])
+    run.policy_evaluation = PolicyEvaluation(**policy)
     promotion = dict(payload["promotion"]); promotion["promotion_history"] = json.dumps(promotion["promotion_history"]); run.promotion = Promotion(**promotion)
     return run
 
@@ -51,13 +81,13 @@ def seed_release_trust_data() -> None:
             session.commit()
 
 
-def get_release_runs() -> List[Dict[str, Any]]:
+def get_release_runs(object_store: Optional[ObjectStore] = None) -> List[Dict[str, Any]]:
     with SessionLocal() as session:
         runs = session.query(ReleaseRun).options(*_LOAD_OPTIONS).order_by(ReleaseRun.id).all()
-        return [{"id": run.release_id, "release_id": run.release_id, "commit_sha": run.commit_sha, "image_digest": run.artifact.image_digest, "policy_status": run.policy_evaluation.overall_decision, "promotion_status": run.promotion_decision.promotion_status if run.promotion_decision else None, "sbom_status": run.sbom.status} for run in runs]
+        return [{"id": run.release_id, "release_id": run.release_id, "commit_sha": run.commit_sha, "image_digest": run.artifact.image_digest, "policy_status": run.policy_evaluation.overall_decision, "promotion_status": run.promotion_decision.promotion_status if run.promotion_decision else None, "sbom_status": _evidence(run, object_store)["sbom"]["status"]} for run in runs]
 
 
-def backfill_policy_evaluations(policy_engine) -> None:
+def backfill_policy_evaluations(policy_engine, object_store: Optional[ObjectStore] = None) -> None:
     """Replace legacy policy fields with the single current engine result.
 
     This runs after the additive schema migration. Re-evaluating every stored
@@ -69,7 +99,11 @@ def backfill_policy_evaluations(policy_engine) -> None:
         runs = session.query(ReleaseRun).options(*_LOAD_OPTIONS).all()
         changed = False
         for run in runs:
-            evaluation = policy_engine.evaluate(_detail(run))
+            # New service-ingested rows already have the engine result. Avoid
+            # reading external evidence during startup just to backfill them.
+            if run.policy_evaluation.rules is not None:
+                continue
+            evaluation = policy_engine.evaluate(_detail(run, object_store))
             policy = run.policy_evaluation
             policy.overall_decision = evaluation["overall_decision"]
             policy.passed_rules = evaluation["passed_rules"]
@@ -82,19 +116,19 @@ def backfill_policy_evaluations(policy_engine) -> None:
             session.commit()
 
 
-def get_release_by_id(release_id: str) -> Optional[Dict[str, Any]]:
+def get_release_by_id(release_id: str, object_store: Optional[ObjectStore] = None) -> Optional[Dict[str, Any]]:
     with SessionLocal() as session:
         run = session.query(ReleaseRun).options(*_LOAD_OPTIONS).filter(ReleaseRun.release_id == release_id).one_or_none()
-        return _detail(run) if run else None
+        return _detail(run, object_store) if run else None
 
 
-def create_release(payload: Dict[str, Any]) -> Dict[str, Any]:
+def create_release(payload: Dict[str, Any], object_store: Optional[ObjectStore] = None) -> Dict[str, Any]:
     with SessionLocal() as session:
         run = _add_release(session, payload); session.commit(); session.refresh(run)
-        return _detail(run)
+        return _detail(run, object_store)
 
 
-def create_promotion_decision(release_id: str, decision: Dict[str, Any], actor: str) -> Optional[Dict[str, Any]]:
+def create_promotion_decision(release_id: str, decision: Dict[str, Any], actor: str, object_store: Optional[ObjectStore] = None) -> Optional[Dict[str, Any]]:
     with SessionLocal() as session:
         run = session.query(ReleaseRun).options(*_LOAD_OPTIONS).filter(ReleaseRun.release_id == release_id).one_or_none()
         if run is None:
@@ -107,7 +141,7 @@ def create_promotion_decision(release_id: str, decision: Dict[str, Any], actor: 
         )
         session.commit()
         session.refresh(run)
-        return _detail(run)["promotion_decision"]
+        return _detail(run, object_store)["promotion_decision"]
 
 
 def get_promotion_decisions() -> List[Dict[str, Any]]:

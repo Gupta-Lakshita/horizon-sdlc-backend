@@ -1,45 +1,51 @@
-"""Request schemas for the frozen Release Trust evidence contract."""
+"""Request schemas for Release Trust CI and manual-demo ingestion."""
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 
+def _manual_build_time() -> str:
+    """Generate an ISO timestamp when a manually created release has none."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 class ReleaseMetadata(BaseModel):
     release_id: str = Field(min_length=1)
-    application: str = Field(min_length=1)
-    environment: str = Field(min_length=1)
-    build_number: int
-    build_time: str = Field(min_length=1)
-    commit_sha: str = Field(min_length=1)
-    branch: str = Field(min_length=1)
+    application: str = Field(default="manual-release", min_length=1)
+    environment: str = Field(default="dev", min_length=1)
+    build_number: int = 0
+    build_time: str = Field(default_factory=_manual_build_time, min_length=1)
+    commit_sha: str = Field(default="manual", min_length=1)
+    branch: str = Field(default="manual", min_length=1)
 
 
 class ArtifactEvidence(BaseModel):
-    image_name: str = Field(min_length=1)
-    image_tag: str = Field(min_length=1)
-    image_digest: str = Field(min_length=1)
-    registry: str = Field(min_length=1)
+    image_name: str = Field(default="manual-image", min_length=1)
+    image_tag: str = Field(default="manual", min_length=1)
+    image_digest: str = Field(default="sha256:manual", min_length=1)
+    registry: str = Field(default="manual", min_length=1)
 
 
 class SBOMEvidence(BaseModel):
-    status: str = Field(min_length=1)
+    status: str = Field(default="verified", min_length=1)
     format: Optional[str] = None
 
 
 class SignatureEvidence(BaseModel):
-    status: str = Field(min_length=1)
-    provider: str = Field(min_length=1)
+    status: str = Field(default="verified", min_length=1)
+    provider: str = Field(default="manual", min_length=1)
 
 
 class ProvenanceEvidence(BaseModel):
-    status: str = Field(min_length=1)
+    status: str = Field(default="verified", min_length=1)
     slsa_level: Optional[str] = None
 
 
 class ScanEvidence(BaseModel):
-    status: str = Field(min_length=1)
-    critical: int = Field(ge=0)
-    high: int = Field(ge=0)
+    status: str = Field(default="pass", min_length=1)
+    critical: int = Field(default=0, ge=0)
+    high: int = Field(default=0, ge=0)
 
 
 class PolicyEvaluation(BaseModel):
@@ -55,20 +61,26 @@ class PolicyEvaluation(BaseModel):
 
 
 class Promotion(BaseModel):
-    current_environment: str = Field(min_length=1)
-    promotion_eligibility: str = Field(min_length=1)
-    promotion_history: List[dict]
+    current_environment: str = Field(default="dev", min_length=1)
+    promotion_eligibility: str = Field(default="eligible", min_length=1)
+    promotion_history: List[dict] = Field(default_factory=list)
 
 
 class ReleaseTrustPayload(BaseModel):
+    """Complete CI metadata or minimal evidence for a manual test release.
+
+    ``release.release_id`` is the only required field.  Optional sections and
+    metadata receive persistence-safe defaults; explicitly supplied evidence is
+    always what drives the Policy Engine result.
+    """
     release: ReleaseMetadata
-    artifact: ArtifactEvidence
-    sbom: SBOMEvidence
-    signature: SignatureEvidence
-    provenance: ProvenanceEvidence
-    scan_evidence: ScanEvidence
+    artifact: ArtifactEvidence = Field(default_factory=ArtifactEvidence)
+    sbom: SBOMEvidence = Field(default_factory=SBOMEvidence)
+    signature: SignatureEvidence = Field(default_factory=SignatureEvidence)
+    provenance: ProvenanceEvidence = Field(default_factory=ProvenanceEvidence)
+    scan_evidence: ScanEvidence = Field(default_factory=ScanEvidence)
     policy_evaluation: Optional[PolicyEvaluation] = None
-    promotion: Promotion
+    promotion: Promotion = Field(default_factory=Promotion)
 
 
 class PromotionRequest(BaseModel):

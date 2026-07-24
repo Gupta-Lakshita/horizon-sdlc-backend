@@ -34,11 +34,11 @@ All endpoints are relative to `/pipeline/api`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/release-trust/runs` | Ingest one complete simulated Release Trust evidence payload. |
+| `POST` | `/release-trust/runs` | Ingest CI/CD evidence or a concise manual-test Release Trust payload. |
 | `GET` | `/release-trust/runs` | List dashboard-ready release summaries. |
 | `GET` | `/release-trust/runs/{release_id}` | Retrieve the complete evidence record for a release. |
 
-`POST /release-trust/runs` requires the evidence sections `release`, `artifact`, `sbom`, `signature`, `provenance`, `scan_evidence`, and `promotion`. The legacy `policy_evaluation` section remains accepted when supplied, but is optional and always replaced by the engine result. The `release` section requires release ID, application, environment, build metadata, commit SHA, and branch. A duplicate `release_id` returns `409`; malformed or incomplete requests return FastAPI validation errors (`422`).
+`POST /release-trust/runs` supports both complete CI/CD evidence and manual testing. For manual use, only `release.release_id` is required; omitted metadata and evidence sections are filled with persistence-safe defaults. The Policy Engine still calculates the outcome from the resulting evidence, so a completed `promotion_history` produces PASS, an empty history produces WARN, and explicitly failed or missing evidence produces BLOCK. CI/CD clients can continue sending every metadata and evidence field unchanged. The legacy `policy_evaluation` section remains accepted when supplied, but is always replaced by the engine result. A duplicate `release_id` returns `409`.
 
 Use `simulated_release_trust_payload()` from `release_trust_runner.py` to produce development-only payloads. It does not execute CI/CD systems, generate real SBOMs or signatures, or verify policy.
 
@@ -69,3 +69,16 @@ print(json.dumps(simulated_release_trust_payload("rel-local-001")))
 ```
 
 The resulting release immediately appears in the list endpoint and is available to the existing dashboard and detail page without frontend changes.
+
+## Release Trust evidence storage
+
+Phase 9 stores SBOM, signature, provenance, and scan JSON independently in an
+`ObjectStore`. New SQLite `release_runs` records keep only opaque
+`*_reference` values; the detail API hydrates those references so its response
+remains unchanged. The local provider writes to `data/evidence/<release_id>/`
+in local development, or `/app/data/evidence/<release_id>/` in Compose. That
+path is inside the existing `backend-data` volume and survives restarts.
+
+`storage/object_store.py` is the provider contract. A future S3 provider only
+needs to implement `upload_json`, `download_json`, `exists`, `delete`, and
+`build_reference`, then replace the composition in `storage.get_default_object_store()`.

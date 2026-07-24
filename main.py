@@ -41,6 +41,7 @@ from enterprise.licensing import (
 from routers.release_trust import router as release_trust_router
 from release_trust_repository import backfill_policy_evaluations, seed_release_trust_data
 from policy_engine import default_policy_engine
+from storage import get_default_object_store
 
 
 # Setup logging
@@ -67,8 +68,20 @@ def ensure_release_trust_policy_schema() -> None:
 
 
 ensure_release_trust_policy_schema()
+
+
+def ensure_release_trust_evidence_reference_schema() -> None:
+    """Add Phase 9 object references without invalidating existing evidence rows."""
+    with engine.begin() as connection:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(release_runs)")).fetchall()}
+        for column in ("sbom_reference", "signature_reference", "provenance_reference", "scan_reference", "bundle_reference"):
+            if column not in columns:
+                connection.execute(text(f"ALTER TABLE release_runs ADD COLUMN {column} VARCHAR"))
+
+
+ensure_release_trust_evidence_reference_schema()
 seed_release_trust_data()
-backfill_policy_evaluations(default_policy_engine)
+backfill_policy_evaluations(default_policy_engine, get_default_object_store())
 
 
 def ensure_environment_catalog_schema() -> None:

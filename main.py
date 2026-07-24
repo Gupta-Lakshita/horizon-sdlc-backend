@@ -80,6 +80,22 @@ def ensure_release_trust_evidence_reference_schema() -> None:
 
 
 ensure_release_trust_evidence_reference_schema()
+
+
+def ensure_release_trust_platform_context_schema() -> None:
+    """Add the optional Application relationship without rewriting releases.
+
+    Existing Phase 1-9 records remain valid and are linked on subsequent
+    ingestion only when their application exists in the platform catalog.
+    """
+    with engine.begin() as connection:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(release_runs)")).fetchall()}
+        if "application_id" not in columns:
+            connection.execute(text("ALTER TABLE release_runs ADD COLUMN application_id INTEGER"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_release_runs_application_id ON release_runs (application_id)"))
+
+
+ensure_release_trust_platform_context_schema()
 seed_release_trust_data()
 backfill_policy_evaluations(default_policy_engine, get_default_object_store())
 

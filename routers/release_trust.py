@@ -1,11 +1,33 @@
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, status
 
-from release_trust_repository import get_promotion_decision, get_promotion_decisions
+from release_trust_repository import get_promotion_decision, get_promotion_decisions, release_is_visible_to_principal
 from release_trust_service import get_release_trust_detail, get_release_trust_runs, ingest_release_trust, request_promotion
 from release_trust_schemas import PromotionRequest, ReleaseTrustPayload
 
 
 router = APIRouter(prefix="/release-trust", tags=["Release Trust"])
+
+
+def platform_principal(authorization: str | None = Header(None)):
+    """Use the platform's existing signed-session dependency lazily.
+
+    The lazy import avoids a router/main import cycle while keeping Release
+    Trust on the same LDAP/session/RBAC implementation as the rest of the API.
+    """
+    from main import get_current_principal
+    return get_current_principal(authorization)
+
+
+def require_release_write_access(principal, environment: str) -> None:
+    from main import ROLE_DEVELOPER, ROLE_PLATFORM_ADMIN, ROLE_RELEASE_MANAGER, principal_has_role, require_environment_permission
+    if not principal_has_role(principal, {ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER, ROLE_RELEASE_MANAGER}):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Release Trust write access requires platform-admin, developer, or release-manager role.")
+    require_environment_permission(principal, environment, "Release Trust action")
+
+
+def resolved_principal(principal):
+    """Keep direct service/router tests compatible with FastAPI dependencies."""
+    return principal if hasattr(principal, "roles") else None
 
 
 RUN_EXAMPLES = {
@@ -32,35 +54,43 @@ RUN_EXAMPLES = {
 
 
 @router.post("/runs", status_code=201)
-def create_release_trust_run(payload: ReleaseTrustPayload = Body(..., openapi_examples=RUN_EXAMPLES)):
+def create_release_trust_run(payload: ReleaseTrustPayload = Body(..., openapi_examples=RUN_EXAMPLES), principal=Depends(platform_principal)):
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    if resolved_principal(principal):
+        require_release_write_access(principal, data["release"]["environment"])
     return ingest_release_trust(data)
 
 
 @router.get("/runs")
-def list_release_trust_runs():
-    return get_release_trust_runs()
+def list_release_trust_runs(principal=Depends(platform_principal)):
+    return get_release_trust_runs(principal=resolved_principal(principal))
 
 
 @router.post("/promotions", status_code=201)
-def create_promotion(payload: PromotionRequest):
-    return request_promotion(payload.release_id, payload.actor)
+def create_promotion(payload: PromotionRequest, principal=Depends(platform_principal)):
+    principal = resolved_principal(principal)
+    release = get_release_trust_detail(payload.release_id, principal=principal)
+    if principal:
+        require_release_write_access(principal, release["release"]["environment"])
+    return request_promotion(payload.release_id, payload.actor, principal=principal)
 
 
 @router.get("/promotions")
-def list_promotions():
-    return get_promotion_decisions()
+def list_promotions(principal=Depends(platform_principal)):
+    principal = resolved_principal(principal)
+    decisions = get_promotion_decisions()
+    return decisions if principal is None else [decision for decision in decisions if release_is_visible_to_principal(decision["release_id"], principal)]
 
 
 @router.get("/promotions/{release_id}")
-def get_promotion(release_id: str):
+def get_promotion(release_id: str, principal=Depends(platform_principal)):
+    get_release_trust_detail(release_id, principal=resolved_principal(principal))
     promotion = get_promotion_decision(release_id)
     if promotion is None:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Promotion decision not found")
     return promotion
 
 
 @router.get("/runs/{release_id}")
-def get_release_trust_run(release_id: str):
-    return get_release_trust_detail(release_id)
+def get_release_trust_run(release_id: str, principal=Depends(platform_principal)):
+    return get_release_trust_detail(release_id, principal=resolved_principal(principal))

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import joinedload
 
 from database import SessionLocal
-from models import Artifact, PolicyEvaluation, Promotion, PromotionDecision, Provenance, ReleaseRun, SBOM, ScanEvidence, Signature
+from models import Application, Artifact, PolicyEvaluation, Promotion, PromotionDecision, Provenance, ReleaseRun, SBOM, ScanEvidence, Signature
 from storage.object_store import ObjectStore
 
 
@@ -16,7 +16,20 @@ SEED_RELEASES = [
 ]
 
 
-_LOAD_OPTIONS = [joinedload(getattr(ReleaseRun, name)) for name in ("artifact", "sbom", "signature", "provenance", "scan_evidence", "policy_evaluation", "promotion", "promotion_decision")]
+_LOAD_OPTIONS = [joinedload(getattr(ReleaseRun, name)) for name in ("platform_application", "artifact", "sbom", "signature", "provenance", "scan_evidence", "policy_evaluation", "promotion", "promotion_decision")]
+
+
+def _platform_context(run: ReleaseRun) -> Optional[Dict[str, Any]]:
+    application = run.platform_application
+    if application is None:
+        return None
+    return {
+        "application_id": application.id,
+        "application_name": application.name,
+        "repository_url": application.repo_url,
+        "repository_branch": application.branch,
+        "application_type": application.app_type,
+    }
 
 
 def _evidence(run: ReleaseRun, object_store: Optional[ObjectStore]) -> Dict[str, Dict[str, Any]]:
@@ -53,7 +66,11 @@ def _detail(run: ReleaseRun, object_store: Optional[ObjectStore] = None) -> Dict
         decision["timestamp"] = decision["timestamp"].isoformat()
         decision["deployment_permitted"] = decision["promotion_status"] == "ALLOW"
     evidence = _evidence(run, object_store)
-    return {"release": {key: getattr(run, key) for key in ("release_id", "application", "environment", "build_number", "build_time", "commit_sha", "branch")}, "artifact": {key: getattr(run.artifact, key) for key in ("image_name", "image_tag", "image_digest", "registry")}, **evidence, "policy_evaluation": policy, "promotion": {"current_environment": run.promotion.current_environment, "promotion_eligibility": run.promotion.promotion_eligibility, "promotion_history": json.loads(run.promotion.promotion_history)}, "promotion_decision": decision}
+    detail = {"release": {key: getattr(run, key) for key in ("release_id", "application", "environment", "build_number", "build_time", "commit_sha", "branch")}, "artifact": {key: getattr(run.artifact, key) for key in ("image_name", "image_tag", "image_digest", "registry")}, **evidence, "policy_evaluation": policy, "promotion": {"current_environment": run.promotion.current_environment, "promotion_eligibility": run.promotion.promotion_eligibility, "promotion_history": json.loads(run.promotion.promotion_history)}, "promotion_decision": decision}
+    context = _platform_context(run)
+    if context:
+        detail["context"] = context
+    return detail
 
 
 def _add_release(session, payload: Dict[str, Any]) -> ReleaseRun:
@@ -74,6 +91,22 @@ def _add_release(session, payload: Dict[str, Any]) -> ReleaseRun:
     return run
 
 
+def resolve_platform_application(release: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve an existing platform Application without creating a duplicate."""
+    application_id = release.get("application_id")
+    application_name = release.get("application")
+    with SessionLocal() as session:
+        query = session.query(Application)
+        application = query.filter(Application.id == application_id).one_or_none() if application_id else query.filter(Application.name == application_name).one_or_none()
+        if application_id and application is None:
+            raise ValueError("platform application not found")
+        if application and application_name and application.name != application_name:
+            raise ValueError("release.application does not match platform application")
+        if application is None:
+            return None
+        return {"id": application.id, "name": application.name}
+
+
 def seed_release_trust_data() -> None:
     with SessionLocal() as session:
         if session.query(ReleaseRun.id).first() is None:
@@ -84,7 +117,35 @@ def seed_release_trust_data() -> None:
 def get_release_runs(object_store: Optional[ObjectStore] = None) -> List[Dict[str, Any]]:
     with SessionLocal() as session:
         runs = session.query(ReleaseRun).options(*_LOAD_OPTIONS).order_by(ReleaseRun.id).all()
-        return [{"id": run.release_id, "release_id": run.release_id, "commit_sha": run.commit_sha, "image_digest": run.artifact.image_digest, "policy_status": run.policy_evaluation.overall_decision, "promotion_status": run.promotion_decision.promotion_status if run.promotion_decision else None, "sbom_status": _evidence(run, object_store)["sbom"]["status"]} for run in runs]
+        result = []
+        for run in runs:
+            item = {"id": run.release_id, "release_id": run.release_id, "commit_sha": run.commit_sha, "image_digest": run.artifact.image_digest, "policy_status": run.policy_evaluation.overall_decision, "promotion_status": run.promotion_decision.promotion_status if run.promotion_decision else None, "sbom_status": _evidence(run, object_store)["sbom"]["status"]}
+            context = _platform_context(run)
+            if context:
+                item["context"] = context
+            result.append(item)
+        return result
+
+
+def release_is_visible_to_principal(release_id: str, principal) -> bool:
+    """Apply existing Application ownership/access grants to linked releases.
+
+    Legacy unlinked releases remain readable for compatibility; once a release
+    is tied to an Application it follows that application's established ACL.
+    """
+    roles = {str(role).strip().lower() for role in getattr(principal, "roles", [])}
+    if roles.intersection({"platform-admin", "qa", "release-manager"}):
+        return True
+    email = getattr(principal, "email", "") or f"{getattr(principal, 'username', 'system')}@local"
+    with SessionLocal() as session:
+        run = session.query(ReleaseRun).filter(ReleaseRun.release_id == release_id).one_or_none()
+        if run is None or run.application_id is None:
+            return True
+        application = session.query(Application).filter(Application.id == run.application_id).one_or_none()
+        if application and application.owner_email == email:
+            return True
+        from models import ApplicationUserAccess
+        return session.query(ApplicationUserAccess.id).filter_by(application_id=run.application_id, user_email=email).first() is not None
 
 
 def backfill_policy_evaluations(policy_engine, object_store: Optional[ObjectStore] = None) -> None:

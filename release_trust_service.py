@@ -3,7 +3,7 @@ from typing import Dict, Any
 
 from fastapi import HTTPException
 
-from release_trust_repository import create_promotion_decision, create_release, get_release_by_id, get_release_runs
+from release_trust_repository import create_promotion_decision, create_release, get_release_by_id, get_release_runs, release_is_visible_to_principal, resolve_platform_application
 from policy_engine import PolicyEngine
 from promotion_engine import PromotionEngine
 from storage import ObjectAlreadyExistsError, ObjectNotFoundError, ObjectStore, ObjectStoreError, get_default_object_store
@@ -45,6 +45,14 @@ def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | No
     release_id = release.get("release_id")
     if not release_id or not str(release_id).strip():
         raise HTTPException(status_code=422, detail="release.release_id is required")
+    try:
+        application = resolve_platform_application(release)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if application:
+        # Use the catalog's canonical name and persist its foreign-key link.
+        release["application_id"] = application["id"]
+        release["application"] = application["name"]
     store = object_store or _store()
     try:
         store.build_reference(release_id, "sbom")
@@ -81,7 +89,7 @@ def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | No
         raise
 
 
-def get_release_trust_detail(release_id: str, object_store: ObjectStore | None = None) -> Dict[str, Any]:
+def get_release_trust_detail(release_id: str, object_store: ObjectStore | None = None, principal=None) -> Dict[str, Any]:
     """Return a detail record with structured policy rules for old and new rows."""
     try:
         release = get_release_by_id(release_id, object_store or _store())
@@ -92,6 +100,8 @@ def get_release_trust_detail(release_id: str, object_store: ObjectStore | None =
     if release is None:
         raise HTTPException(status_code=404, detail="Release Trust run not found")
 
+    if principal is not None and not release_is_visible_to_principal(release_id, principal):
+        raise HTTPException(status_code=403, detail="You do not have access to this application's release.")
     policy = release.setdefault("policy_evaluation", {})
     if not policy.get("rules"):
         # A process started before the migration can still encounter a legacy
@@ -101,16 +111,17 @@ def get_release_trust_detail(release_id: str, object_store: ObjectStore | None =
     return release
 
 
-def get_release_trust_runs(object_store: ObjectStore | None = None):
+def get_release_trust_runs(object_store: ObjectStore | None = None, principal=None):
     try:
-        return get_release_runs(object_store or _store())
+        runs = get_release_runs(object_store or _store())
+        return runs if principal is None else [run for run in runs if release_is_visible_to_principal(run["release_id"], principal)]
     except ObjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Release Trust evidence not found") from exc
     except (ObjectStoreError, RuntimeError) as exc:
         raise HTTPException(status_code=500, detail=f"Release Trust evidence unavailable: {exc}") from exc
 
 
-def request_promotion(release_id: str, actor: str = "system", object_store: ObjectStore | None = None) -> Dict[str, Any]:
+def request_promotion(release_id: str, actor: str = "system", object_store: ObjectStore | None = None, principal=None) -> Dict[str, Any]:
     """Apply the deployment gate to the persisted policy; never request policy input."""
     if not release_id or not release_id.strip():
         raise HTTPException(status_code=422, detail="release_id is required")
@@ -123,6 +134,8 @@ def request_promotion(release_id: str, actor: str = "system", object_store: Obje
         raise HTTPException(status_code=500, detail=f"Release Trust evidence unavailable: {exc}") from exc
     if release is None:
         raise HTTPException(status_code=404, detail="Release Trust run not found")
+    if principal is not None and not release_is_visible_to_principal(release_id, principal):
+        raise HTTPException(status_code=403, detail="You do not have access to this application's release.")
     try:
         decision = promotion_engine.evaluate(release["policy_evaluation"].get("overall_decision"))
         persisted = create_promotion_decision(release_id, decision, actor or "system", store)

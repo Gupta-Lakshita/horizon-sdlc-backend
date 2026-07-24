@@ -20,6 +20,7 @@ class Application(Base):
 
     vulnerabilities = relationship("Vulnerability", back_populates="application")
     access_list = relationship("ApplicationUserAccess", back_populates="application")
+    release_runs = relationship("ReleaseRun", back_populates="platform_application")
 
 
 class ApplicationUserAccess(Base):
@@ -110,6 +111,11 @@ class ReleaseRun(Base):
     provenance_reference = Column(String, nullable=True)
     scan_reference = Column(String, nullable=True)
     bundle_reference = Column(String, nullable=True)
+    # Phase 10: reuse the platform application catalog rather than creating a
+    # parallel Release Trust project or repository entity.
+    application_id = Column(Integer, ForeignKey("applications.id"), nullable=True, index=True)
+
+    platform_application = relationship("Application", back_populates="release_runs")
 
     artifact = relationship("Artifact", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
     sbom = relationship("SBOM", back_populates="release_run", uselist=False, cascade="all, delete-orphan")

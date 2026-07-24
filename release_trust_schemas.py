@@ -18,6 +18,9 @@ class ReleaseMetadata(BaseModel):
     build_time: str = Field(default_factory=_manual_build_time, min_length=1)
     commit_sha: str = Field(default="manual", min_length=1)
     branch: str = Field(default="manual", min_length=1)
+    # Optional platform catalog identifier. When omitted, the service resolves
+    # the existing Application by name, preserving the Phase 1-9 payload.
+    application_id: Optional[int] = Field(default=None, ge=1)
 
 
 class ArtifactEvidence(BaseModel):

@@ -1064,6 +1064,28 @@ def create_session_token(principal: AuthPrincipal) -> str:
     return f"{payload}.{_b64url_encode(signature)}"
 
 
+def create_login_response(principal: AuthPrincipal) -> Dict[str, Any]:
+    return {
+        "username": principal.username,
+        "fullName": principal.full_name,
+        "email": principal.email,
+        "roles": normalize_roles(principal.roles),
+        "groups": principal.groups,
+        "token": create_session_token(principal),
+        "sessionExpiresIn": SESSION_TTL_SECONDS,
+    }
+
+
+def create_local_dev_principal(username: str) -> AuthPrincipal:
+    return AuthPrincipal(
+        username=username,
+        email=f"{username}@local.dev",
+        full_name=username,
+        roles=normalize_roles(LOCAL_DEV_AUTH_ROLES),
+        groups=[],
+    )
+
+
 def decode_session_token(token: str) -> AuthPrincipal:
     try:
         payload, signature = token.split(".", 1)
@@ -1097,12 +1119,7 @@ def get_current_principal(authorization: Optional[str] = Header(None)) -> AuthPr
     if LOCAL_DEV_AUTH_ENABLED and (
         not authorization or not authorization.lower().startswith("bearer ")
     ):
-        return AuthPrincipal(
-            username="local-dev",
-            email="local-dev@horizonrelevance.com",
-            full_name="Local Dev",
-            roles=normalize_roles(LOCAL_DEV_AUTH_ROLES),
-        )
+        return create_local_dev_principal("local-dev")
     if not RBAC_ENFORCEMENT_ENABLED:
         return AuthPrincipal(
             username="system", email="", full_name="System", roles=[ROLE_PLATFORM_ADMIN]
@@ -2632,6 +2649,9 @@ async def login(request: Request):
         return JSONResponse(
             status_code=400, content={"error": "Username and password required"}
         )
+    if LOCAL_DEV_AUTH_ENABLED:
+        principal = create_local_dev_principal(username)
+        return create_login_response(principal)
     try:
         server = Server(LDAP_SERVER, get_info=ALL)
         search_conn = Connection(
@@ -2680,15 +2700,7 @@ async def login(request: Request):
             groups=groups,
         )
 
-        return {
-            "username": username,
-            "fullName": display_name,
-            "email": email,
-            "roles": roles,
-            "groups": groups,
-            "token": create_session_token(principal),
-            "sessionExpiresIn": SESSION_TTL_SECONDS,
-        }
+        return create_login_response(principal)
 
     except Exception:
         return JSONResponse(

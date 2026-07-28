@@ -125,6 +125,56 @@ class ReleaseRun(Base):
     policy_evaluation = relationship("PolicyEvaluation", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
     promotion = relationship("Promotion", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
     promotion_decision = relationship("PromotionDecision", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    runner_execution = relationship("RunnerExecution", back_populates="release_run", uselist=False, cascade="all, delete-orphan")
+    runner_evidence = relationship("RunnerEvidence", back_populates="release_run", cascade="all, delete-orphan")
+    pipeline_events = relationship("PipelineEvent", back_populates="release_run", cascade="all, delete-orphan")
+
+
+class RunnerExecution(Base):
+    """Platform-neutral execution context supplied by an external runner."""
+    __tablename__ = "release_runner_executions"
+    id = Column(Integer, primary_key=True)
+    release_run_id = Column(Integer, ForeignKey("release_runs.id"), unique=True, nullable=False, index=True)
+    contract_version = Column(String, nullable=False)
+    pipeline_id = Column(String, nullable=False)
+    pipeline_execution_id = Column(String, nullable=False, index=True)
+    external_run_id = Column(String, nullable=True)
+    runner_name = Column(String, nullable=True)
+    runner_version = Column(String, nullable=True)
+    build_url = Column(String, nullable=True)
+    build_number = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="pending")
+    trigger_source = Column(String, nullable=True)
+    started_at = Column(String, nullable=True)
+    finished_at = Column(String, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    release_run = relationship("ReleaseRun", back_populates="runner_execution")
+
+
+class RunnerEvidence(Base):
+    """Extensible evidence registry; categories are caller-defined strings."""
+    __tablename__ = "release_runner_evidence"
+    id = Column(Integer, primary_key=True)
+    release_run_id = Column(Integer, ForeignKey("release_runs.id"), nullable=False, index=True)
+    evidence_type = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    reference = Column(String, nullable=True)
+    media_type = Column(String, nullable=True)
+    checksum = Column(String, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    release_run = relationship("ReleaseRun", back_populates="runner_evidence")
+
+
+class PipelineEvent(Base):
+    __tablename__ = "release_pipeline_events"
+    id = Column(Integer, primary_key=True)
+    release_run_id = Column(Integer, ForeignKey("release_runs.id"), nullable=False, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    occurred_at = Column(String, nullable=False)
+    payload_json = Column(Text, nullable=True)
+    release_run = relationship("ReleaseRun", back_populates="pipeline_events")
 
 
 class ReleaseEvidenceBase:

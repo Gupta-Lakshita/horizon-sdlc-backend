@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, status
 
 from release_trust_repository import get_promotion_decision, get_promotion_decisions, release_is_visible_to_principal
-from release_trust_service import get_release_trust_detail, get_release_trust_runs, ingest_release_trust, request_promotion
+from release_trust_service import get_release_trust_detail, get_release_trust_runs, get_runner_status, ingest_release_trust, ingest_runner_release, publish_runner_event, publish_runner_evidence, request_promotion, update_runner_status
 from release_trust_schemas import PromotionRequest, ReleaseTrustPayload
+from runner_integration_schemas import EvidenceUpload, RunnerPipelineEvent, RunnerReleaseCreate, RunnerStatusUpdate
 
 
 router = APIRouter(prefix="/release-trust", tags=["Release Trust"])
@@ -94,3 +95,39 @@ def get_promotion(release_id: str, principal=Depends(platform_principal)):
 @router.get("/runs/{release_id}")
 def get_release_trust_run(release_id: str, principal=Depends(platform_principal)):
     return get_release_trust_detail(release_id, principal=resolved_principal(principal))
+
+
+@router.post("/runner/v1/releases", status_code=201, tags=["Runner Integration"])
+def create_runner_release(payload: RunnerReleaseCreate, principal=Depends(platform_principal)):
+    data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    principal = resolved_principal(principal)
+    if principal: require_release_write_access(principal, data["environment"])
+    return ingest_runner_release(data)
+
+
+@router.post("/runner/v1/releases/{release_id}/evidence", status_code=201, tags=["Runner Integration"])
+def upload_runner_evidence(release_id: str, payload: EvidenceUpload, principal=Depends(platform_principal)):
+    release = get_release_trust_detail(release_id, principal=resolved_principal(principal))
+    if resolved_principal(principal): require_release_write_access(principal, release["release"]["environment"])
+    data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    return publish_runner_evidence(release_id, data)
+
+
+@router.patch("/runner/v1/releases/{release_id}/status", tags=["Runner Integration"])
+def set_runner_status(release_id: str, payload: RunnerStatusUpdate, principal=Depends(platform_principal)):
+    release = get_release_trust_detail(release_id, principal=resolved_principal(principal))
+    if resolved_principal(principal): require_release_write_access(principal, release["release"]["environment"])
+    return update_runner_status(release_id, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict())
+
+
+@router.post("/runner/v1/releases/{release_id}/events", status_code=201, tags=["Runner Integration"])
+def publish_pipeline_event(release_id: str, payload: RunnerPipelineEvent, principal=Depends(platform_principal)):
+    release = get_release_trust_detail(release_id, principal=resolved_principal(principal))
+    if resolved_principal(principal): require_release_write_access(principal, release["release"]["environment"])
+    return publish_runner_event(release_id, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict())
+
+
+@router.get("/runner/v1/releases/{release_id}/status", tags=["Runner Integration"])
+def get_runner_ingestion_status(release_id: str, principal=Depends(platform_principal)):
+    get_release_trust_detail(release_id, principal=resolved_principal(principal))
+    return get_runner_status(release_id)

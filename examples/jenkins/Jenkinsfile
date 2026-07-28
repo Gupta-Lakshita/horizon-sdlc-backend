@@ -1,0 +1,10 @@
+pipeline {
+  agent any
+  environment { HORIZON_API_URL = 'https://horizon.example.com/pipeline/api'; RELEASE_ID = "payments-${env.BUILD_NUMBER}" }
+  stages {
+    stage('Create release') { steps { sh 'python3 -m release_trust_adapters.cli --base-url "$HORIZON_API_URL" --authorization "Bearer $HORIZON_SESSION" create-release @examples/runner-api/create-release.json' } }
+    stage('Publish evidence') { steps { sh 'python3 -m release_trust_adapters.cli --base-url "$HORIZON_API_URL" --authorization "Bearer $HORIZON_SESSION" upload-evidence "$RELEASE_ID" @examples/runner-api/evidence.json' } }
+    stage('Publish completed event') { steps { sh 'python3 -m release_trust_adapters.cli --base-url "$HORIZON_API_URL" --authorization "Bearer $HORIZON_SESSION" publish-event "$RELEASE_ID" @examples/runner-api/event.json' } }
+  }
+  post { success { sh 'python3 -m release_trust_adapters.cli --base-url "$HORIZON_API_URL" --authorization "Bearer $HORIZON_SESSION" update-status "$RELEASE_ID" @examples/runner-api/status.json' } }
+}

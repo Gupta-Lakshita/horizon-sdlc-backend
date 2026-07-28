@@ -1,0 +1,1 @@
+{"evidence_type": "sbom", "name": "payments.sbom.json", "reference": "https://artifacts.example.com/101/sbom.json", "media_type": "application/spdx+json", "checksum": "sha256:example", "metadata": {"generator": "reference"}}

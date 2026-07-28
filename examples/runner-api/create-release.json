@@ -1,0 +1,11 @@
+{
+  "contract_version": "v1",
+  "release_id": "payments-2026.07.28-101",
+  "application": "payments",
+  "environment": "staging",
+  "repository": {"url": "https://git.example.com/payments", "name": "payments", "revision": "abc123"},
+  "commit_sha": "abc123", "branch": "main", "tag": "2026.07.28-101",
+  "build": {"number": 101, "timestamp": "2026-07-28T08:00:00Z"},
+  "artifacts": [{"name": "payments", "version": "2026.07.28-101", "digest": "sha256:example", "uri": "registry.example.com/payments"}],
+  "execution": {"pipeline_id": "payments-release", "pipeline_execution_id": "payments-release#101", "runner_name": "reference-runner", "build_url": "https://ci.example.com/runs/101", "build_number": "101", "status": "running", "trigger_source": "push", "started_at": "2026-07-28T08:00:00Z"}
+}

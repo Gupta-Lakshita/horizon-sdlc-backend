@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import joinedload
 
 from database import SessionLocal
-from models import Application, Artifact, PolicyEvaluation, Promotion, PromotionDecision, Provenance, ReleaseRun, SBOM, ScanEvidence, Signature
+from models import Application, Artifact, PipelineEvent, PolicyEvaluation, Promotion, PromotionDecision, Provenance, ReleaseRun, RunnerEvidence, RunnerExecution, SBOM, ScanEvidence, Signature
 from storage.object_store import ObjectStore
 
 
@@ -233,3 +233,57 @@ def update_release(release_id: str, payload: Dict[str, Any]) -> Optional[Dict[st
             for key, value in payload.get(group, {}).items(): setattr(obj, key, value)
         for key, value in payload.get("promotion", {}).items(): setattr(run.promotion, key, json.dumps(value) if key == "promotion_history" else value)
         session.commit(); return _detail(run)
+
+
+def add_runner_execution(release_id: str, execution: Dict[str, Any], contract_version: str) -> None:
+    with SessionLocal() as session:
+        run = session.query(ReleaseRun).filter_by(release_id=release_id).one()
+        fields = dict(execution)
+        fields["metadata_json"] = json.dumps(fields.pop("metadata", {}))
+        run.runner_execution = RunnerExecution(contract_version=contract_version, **fields)
+        session.commit()
+
+
+def add_runner_evidence(release_id: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+    with SessionLocal() as session:
+        run = session.query(ReleaseRun).filter_by(release_id=release_id).one_or_none()
+        if not run: return None
+        fields = dict(evidence); fields["metadata_json"] = json.dumps(fields.pop("metadata", {}))
+        row = RunnerEvidence(release_run_id=run.id, **fields); session.add(row); session.commit(); session.refresh(row)
+        return {"id": row.id, "evidence_type": row.evidence_type, "name": row.name, "reference": row.reference}
+
+
+def update_runner_execution_status(release_id: str, update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    with SessionLocal() as session:
+        row = session.query(RunnerExecution).join(ReleaseRun).filter(ReleaseRun.release_id == release_id).one_or_none()
+        if not row: return None
+        metadata = json.loads(row.metadata_json or "{}")
+        metadata.update(update.get("metadata", {})); row.metadata_json = json.dumps(metadata)
+        for key in ("status", "finished_at", "duration_seconds"):
+            if update.get(key) is not None: setattr(row, key, update[key])
+        session.commit()
+        return _runner_execution_dict(row)
+
+
+def add_pipeline_event(release_id: str, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    with SessionLocal() as session:
+        run = session.query(ReleaseRun).filter_by(release_id=release_id).one_or_none()
+        if not run: return None
+        row = PipelineEvent(release_run_id=run.id, event_type=event["event_type"], occurred_at=event["occurred_at"], payload_json=json.dumps(event.get("payload", {})))
+        session.add(row); session.commit(); return {"event_type": row.event_type, "occurred_at": row.occurred_at}
+
+
+def _runner_execution_dict(row: RunnerExecution) -> Dict[str, Any]:
+    return {key: getattr(row, key) for key in ("contract_version", "pipeline_id", "pipeline_execution_id", "external_run_id", "runner_name", "runner_version", "build_url", "build_number", "status", "trigger_source", "started_at", "finished_at", "duration_seconds")} | {"metadata": json.loads(row.metadata_json or "{}")}
+
+
+def get_runner_ingestion_status(release_id: str) -> Optional[Dict[str, Any]]:
+    with SessionLocal() as session:
+        run = session.query(ReleaseRun).filter_by(release_id=release_id).one_or_none()
+        if not run: return None
+        execution = session.query(RunnerExecution).filter_by(release_run_id=run.id).one_or_none()
+        evidence = session.query(RunnerEvidence).filter_by(release_run_id=run.id).all()
+        events = session.query(PipelineEvent).filter_by(release_run_id=run.id).order_by(PipelineEvent.id).all()
+        return {"release_id": release_id, "execution": _runner_execution_dict(execution) if execution else None,
+                "evidence": [{"id": e.id, "evidence_type": e.evidence_type, "name": e.name, "reference": e.reference} for e in evidence],
+                "events": [{"event_type": e.event_type, "occurred_at": e.occurred_at} for e in events]}

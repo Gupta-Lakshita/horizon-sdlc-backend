@@ -3,7 +3,7 @@ from typing import Dict, Any
 
 from fastapi import HTTPException
 
-from release_trust_repository import create_promotion_decision, create_release, get_release_by_id, get_release_runs, release_is_visible_to_principal, resolve_platform_application
+from release_trust_repository import add_pipeline_event, add_runner_evidence, add_runner_execution, create_promotion_decision, create_release, get_release_by_id, get_release_runs, get_runner_ingestion_status, release_is_visible_to_principal, resolve_platform_application, update_runner_execution_status
 from policy_engine import PolicyEngine
 from promotion_engine import PromotionEngine
 from storage import ObjectAlreadyExistsError, ObjectNotFoundError, ObjectStore, ObjectStoreError, get_default_object_store
@@ -146,3 +146,44 @@ def request_promotion(release_id: str, actor: str = "system", object_store: Obje
     if persisted is None:
         raise HTTPException(status_code=404, detail="Release Trust run not found")
     return persisted
+
+
+def ingest_runner_release(contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Adapt a v1 runner envelope to the canonical Release Trust service path."""
+    build = contract.get("build", {})
+    artifact = (contract.get("artifacts") or [{}])[0]
+    try: build_number = int(build.get("number", 0))
+    except (TypeError, ValueError): build_number = 0
+    canonical = {"release": {"release_id": contract["release_id"], "application": contract["application"], "environment": contract.get("environment", "dev"), "build_number": build_number, "build_time": build.get("timestamp") or contract["execution"].get("started_at") or "runner", "commit_sha": contract.get("commit_sha", "unknown"), "branch": contract.get("branch", "unknown")},
+                 "artifact": {"image_name": artifact.get("name") or "runner-artifact", "image_tag": artifact.get("version") or contract.get("tag") or "unknown", "image_digest": artifact.get("digest") or "unknown", "registry": artifact.get("uri") or "runner"},
+                 "sbom": {"status": "missing"}, "signature": {"status": "missing"}, "provenance": {"status": "missing"}, "scan_evidence": {"status": "missing", "critical": 0, "high": 0}, "promotion": {"current_environment": contract.get("environment", "dev"), "promotion_eligibility": "pending", "promotion_history": []}}
+    release = ingest_release_trust(canonical)
+    add_runner_execution(contract["release_id"], contract["execution"], contract["contract_version"])
+    for evidence in contract.get("evidence", []): add_runner_evidence(contract["release_id"], evidence)
+    add_pipeline_event(contract["release_id"], {"event_type": "pipeline.started", "occurred_at": contract["execution"].get("started_at") or "runner", "payload": {"pipeline_id": contract["execution"]["pipeline_id"]}})
+    return release
+
+
+def publish_runner_evidence(release_id: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+    result = add_runner_evidence(release_id, evidence)
+    if result is None: raise HTTPException(status_code=404, detail="Release Trust run not found")
+    add_pipeline_event(release_id, {"event_type": "evidence.uploaded", "occurred_at": evidence.get("occurred_at", "runner"), "payload": {"evidence_type": evidence["evidence_type"], "name": evidence["name"]}})
+    return result
+
+
+def update_runner_status(release_id: str, update: Dict[str, Any]) -> Dict[str, Any]:
+    result = update_runner_execution_status(release_id, update)
+    if result is None: raise HTTPException(status_code=404, detail="Runner ingestion not found")
+    return result
+
+
+def publish_runner_event(release_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+    result = add_pipeline_event(release_id, event)
+    if result is None: raise HTTPException(status_code=404, detail="Release Trust run not found")
+    return result
+
+
+def get_runner_status(release_id: str) -> Dict[str, Any]:
+    result = get_runner_ingestion_status(release_id)
+    if result is None: raise HTTPException(status_code=404, detail="Release Trust run not found")
+    return result

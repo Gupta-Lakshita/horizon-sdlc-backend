@@ -1,6 +1,6 @@
 """Request schemas for Release Trust CI and manual-demo ingestion."""
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -92,3 +92,13 @@ class PromotionRequest(BaseModel):
     # Accepted only to demonstrate backward-compatible rejection of forged
     # decisions; the router and service intentionally never read it.
     promotion_status: Optional[str] = None
+
+
+class ReleaseTrustDetailResponse(BaseModel):
+    """Additive Phase 13 fields surfaced in OpenAPI; legacy fields stay free-form."""
+    release: Dict[str, Any]
+    findings: Optional[Dict[str, Any]] = None
+    promotion_preflight: Optional[Dict[str, Any]] = None
+    trust_score: Optional[Dict[str, Any]] = None
+    class Config:
+        extra = "allow"

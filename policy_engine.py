@@ -29,6 +29,11 @@ class PolicyEngine:
         scan = evidence.get("scan_evidence") or {}
         critical = int(scan.get("critical", 0) or 0)
         high = int(scan.get("high", 0) or 0)
+        finding_summary = (evidence.get("findings") or {}).get("summary", {})
+        # Prefer correlated Secure SDLC findings when available. Suppressed and
+        # currently approved exceptions are not active blocking findings.
+        active_critical = int(finding_summary.get("active_critical", finding_summary.get("critical", critical)))
+        active_high = int(finding_summary.get("active_high", finding_summary.get("high", high)))
         promotion = evidence.get("promotion") or {}
         promotion_completed = len(promotion.get("promotion_history") or []) > 0
 
@@ -36,8 +41,8 @@ class PolicyEngine:
             {"rule": "SBOM exists", "result": PASS if sbom_exists else BLOCK},
             {"rule": "Signature verified", "result": PASS if signature_verified else BLOCK},
             {"rule": "Provenance exists", "result": PASS if provenance_exists else BLOCK},
-            {"rule": "Critical vulnerabilities == 0", "result": PASS if critical == 0 else BLOCK},
-            {"rule": "High vulnerabilities > 0", "result": WARN if high > 0 else PASS},
+            {"rule": "Critical vulnerabilities == 0", "result": PASS if active_critical == 0 else BLOCK},
+            {"rule": "High vulnerabilities > 0", "result": WARN if active_high > 0 else PASS},
             {"rule": "Promotion completed", "result": PASS if promotion_completed else WARN},
         ]
         blocked = sum(rule["result"] == BLOCK for rule in rules)

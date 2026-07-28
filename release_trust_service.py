@@ -6,11 +6,15 @@ from fastapi import HTTPException
 from release_trust_repository import add_pipeline_event, add_runner_evidence, add_runner_execution, create_promotion_decision, create_release, get_release_by_id, get_release_runs, get_runner_ingestion_status, release_is_visible_to_principal, resolve_platform_application, update_runner_execution_status
 from policy_engine import PolicyEngine
 from promotion_engine import PromotionEngine
+from findings_correlation import correlate_findings
+from promotion_preflight import PromotionPreflightService, TrustScoreCalculator
 from storage import ObjectAlreadyExistsError, ObjectNotFoundError, ObjectStore, ObjectStoreError, get_default_object_store
 
 
 policy_engine = PolicyEngine()
 promotion_engine = PromotionEngine()
+preflight_service = PromotionPreflightService()
+trust_score_calculator = TrustScoreCalculator()
 
 
 def _store() -> ObjectStore:
@@ -63,6 +67,7 @@ def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | No
 
     # Build a distinct persistence payload so a caller-supplied legacy policy
     # section can never reach the repository.
+    payload["findings"] = correlate_findings(payload)
     computed_evaluation = policy_engine.evaluate(payload)
     payload_for_persistence = {
         **payload,
@@ -108,6 +113,13 @@ def get_release_trust_detail(release_id: str, object_store: ObjectStore | None =
         # row. Return one internally consistent computed object; normal app
         # startup persists this same value through the repository backfill.
         release["policy_evaluation"] = policy_engine.evaluate(release)
+    release["findings"] = correlate_findings(release)
+    # Evaluate findings-aware policy on the read model; old persisted policy
+    # remains present and response fields are additive.
+    release["policy_evaluation"] = policy_engine.evaluate(release)
+    preflight = preflight_service.evaluate(release)
+    release["promotion_preflight"] = preflight
+    release["trust_score"] = trust_score_calculator.calculate(release, preflight)
     return release
 
 
@@ -137,7 +149,11 @@ def request_promotion(release_id: str, actor: str = "system", object_store: Obje
     if principal is not None and not release_is_visible_to_principal(release_id, principal):
         raise HTTPException(status_code=403, detail="You do not have access to this application's release.")
     try:
-        decision = promotion_engine.evaluate(release["policy_evaluation"].get("overall_decision"))
+        release["findings"] = correlate_findings(release)
+        release["policy_evaluation"] = policy_engine.evaluate(release)
+        preflight = preflight_service.evaluate(release)
+        decision = promotion_engine.evaluate(preflight["status"])
+        decision["reason"] = "; ".join(preflight["blocking_reasons"]) if preflight["blocking_reasons"] else decision["reason"]
         persisted = create_promotion_decision(release_id, decision, actor or "system", store)
     except ValueError as exc:
         if str(exc) == "promotion already exists":

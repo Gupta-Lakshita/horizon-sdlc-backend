@@ -2,7 +2,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, status
 
 from release_trust_repository import get_promotion_decision, get_promotion_decisions, release_is_visible_to_principal
 from release_trust_service import get_release_trust_detail, get_release_trust_runs, get_runner_status, ingest_release_trust, ingest_runner_release, publish_runner_event, publish_runner_evidence, request_promotion, update_runner_status
-from release_trust_schemas import PromotionRequest, ReleaseTrustPayload
+from release_trust_schemas import PromotionRequest, ReleaseTrustPayload, ReleaseTrustDetailResponse
 from runner_integration_schemas import EvidenceUpload, RunnerPipelineEvent, RunnerReleaseCreate, RunnerStatusUpdate
 
 
@@ -92,9 +92,15 @@ def get_promotion(release_id: str, principal=Depends(platform_principal)):
     return promotion
 
 
-@router.get("/runs/{release_id}")
+@router.get("/runs/{release_id}", response_model=ReleaseTrustDetailResponse)
 def get_release_trust_run(release_id: str, principal=Depends(platform_principal)):
     return get_release_trust_detail(release_id, principal=resolved_principal(principal))
+
+
+@router.get("/runs/{release_id}/preflight")
+def get_promotion_preflight(release_id: str, principal=Depends(platform_principal)):
+    """Return the findings-aware eligibility calculation without promoting."""
+    return get_release_trust_detail(release_id, principal=resolved_principal(principal))["promotion_preflight"]
 
 
 @router.post("/runner/v1/releases", status_code=201, tags=["Runner Integration"])

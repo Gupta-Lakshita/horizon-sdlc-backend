@@ -2,6 +2,8 @@
 
 from .object_store import ObjectStore, ObjectStoreError, ObjectNotFoundError, ObjectAlreadyExistsError
 from .local_object_store import LocalObjectStore
+from .s3_object_store import S3ObjectStore
+from .azure_blob_object_store import AzureBlobObjectStore
 import os
 
 _active_object_store: ObjectStore | None = None
@@ -14,7 +16,7 @@ def create_object_store(provider: str | None = None) -> ObjectStore:
     service/router changes.
     """
     selected = (provider or os.getenv("OBJECT_STORE_PROVIDER", "local")).strip().lower()
-    providers = {"local": LocalObjectStore}
+    providers = {"local": LocalObjectStore, "s3": S3ObjectStore, "minio": S3ObjectStore, "azure": AzureBlobObjectStore, "azure-blob": AzureBlobObjectStore}
     try:
         return providers[selected]()
     except KeyError as exc:
@@ -35,4 +37,4 @@ def get_default_object_store() -> ObjectStore:
         raise RuntimeError("ObjectStore has not been initialized")
     return _active_object_store
 
-__all__ = ["ObjectStore", "ObjectStoreError", "ObjectNotFoundError", "ObjectAlreadyExistsError", "create_object_store", "initialize_object_store", "get_default_object_store"]
+__all__ = ["ObjectStore", "ObjectStoreError", "ObjectNotFoundError", "ObjectAlreadyExistsError", "LocalObjectStore", "S3ObjectStore", "AzureBlobObjectStore", "create_object_store", "initialize_object_store", "get_default_object_store"]

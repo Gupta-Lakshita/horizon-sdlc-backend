@@ -9,6 +9,8 @@ from promotion_engine import PromotionEngine
 from findings_correlation import correlate_findings
 from promotion_preflight import PromotionPreflightService, TrustScoreCalculator
 from storage import ObjectAlreadyExistsError, ObjectNotFoundError, ObjectStore, ObjectStoreError
+from release_trust_operations import audit, metrics
+from enterprise.licensing import LicenseValidationError, default_license_from_env, validate_license
 
 
 policy_engine = PolicyEngine()
@@ -58,6 +60,13 @@ def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | No
     release_id = release.get("release_id")
     if not release_id or not str(release_id).strip():
         raise HTTPException(status_code=422, detail="release.release_id is required")
+    # Reuse the platform license entitlement. This is intentionally an
+    # optional feature check so existing deployments retain their API contract.
+    try:
+        validate_license(default_license_from_env(), "Release Promotion Pipeline", release.get("environment", "dev"), ["release_trust"])
+    except LicenseValidationError as exc:
+        audit("release.create", str(release_id), "denied", details={"reason": "license"})
+        raise HTTPException(status_code=403, detail="Release Trust is not enabled for this license") from exc
     try:
         application = resolve_platform_application(release)
     except ValueError as exc:
@@ -87,7 +96,11 @@ def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | No
     try:
         references = _store_evidence(payload_for_persistence, store)
         payload_for_persistence["evidence_references"] = references
-        return create_release(payload_for_persistence, store)
+        result = create_release(payload_for_persistence, store)
+        metrics.increment("release_trust.releases_created")
+        metrics.increment("release_trust.evidence_uploads")
+        audit("release.create", str(release_id), "success")
+        return result
     except ObjectAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail="evidence already exists for release_id") from exc
     except ObjectStoreError as exc:
@@ -129,6 +142,7 @@ def get_release_trust_detail(release_id: str, object_store: ObjectStore | None =
     preflight = preflight_service.evaluate(release)
     release["promotion_preflight"] = preflight
     release["trust_score"] = trust_score_calculator.calculate(release, preflight)
+    metrics.increment("release_trust.evidence_retrievals")
     return release
 
 
@@ -164,6 +178,10 @@ def request_promotion(release_id: str, actor: str = "system", object_store: Obje
         decision = promotion_engine.evaluate(preflight["status"])
         decision["reason"] = "; ".join(preflight["blocking_reasons"]) if preflight["blocking_reasons"] else decision["reason"]
         persisted = create_promotion_decision(release_id, decision, actor or "system", store)
+        metrics.increment("release_trust.promotion_attempts")
+        if decision["promotion_status"] != "ALLOW":
+            metrics.increment("release_trust.promotion_failures")
+        audit("promotion.execute", release_id, decision["promotion_status"].lower(), principal=principal, details={"policy_status": decision["policy_status"]})
     except ValueError as exc:
         if str(exc) == "promotion already exists":
             raise HTTPException(status_code=409, detail="promotion already exists") from exc
@@ -186,6 +204,8 @@ def ingest_runner_release(contract: Dict[str, Any]) -> Dict[str, Any]:
     add_runner_execution(contract["release_id"], contract["execution"], contract["contract_version"])
     for evidence in contract.get("evidence", []): add_runner_evidence(contract["release_id"], evidence)
     add_pipeline_event(contract["release_id"], {"event_type": "pipeline.started", "occurred_at": contract["execution"].get("started_at") or "runner", "payload": {"pipeline_id": contract["execution"]["pipeline_id"]}})
+    metrics.increment("release_trust.runner_api_requests")
+    audit("runner.ingest", contract["release_id"], "success")
     return release
 
 
@@ -193,6 +213,8 @@ def publish_runner_evidence(release_id: str, evidence: Dict[str, Any]) -> Dict[s
     result = add_runner_evidence(release_id, evidence)
     if result is None: raise HTTPException(status_code=404, detail="Release Trust run not found")
     add_pipeline_event(release_id, {"event_type": "evidence.uploaded", "occurred_at": evidence.get("occurred_at", "runner"), "payload": {"evidence_type": evidence["evidence_type"], "name": evidence["name"]}})
+    metrics.increment("release_trust.evidence_uploads")
+    audit("evidence.upload", release_id, "success", details={"evidence_type": evidence["evidence_type"]})
     return result
 
 

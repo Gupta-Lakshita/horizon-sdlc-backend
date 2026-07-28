@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
 
 from release_trust_repository import get_promotion_decision, get_promotion_decisions, release_is_visible_to_principal
 from release_trust_service import get_release_trust_detail, get_release_trust_runs, get_runner_status, ingest_release_trust, ingest_runner_release, publish_runner_event, publish_runner_evidence, request_promotion, update_runner_status
 from release_trust_schemas import PromotionRequest, ReleaseTrustPayload, ReleaseTrustDetailResponse
 from runner_integration_schemas import EvidenceUpload, RunnerPipelineEvent, RunnerReleaseCreate, RunnerStatusUpdate
+from release_trust_operations import audit, health_report, list_audit_logs, metrics
 
 
 router = APIRouter(prefix="/release-trust", tags=["Release Trust"])
@@ -19,11 +20,28 @@ def platform_principal(authorization: str | None = Header(None)):
     return get_current_principal(authorization)
 
 
+RELEASE_TRUST_PERMISSION_ROLES = {
+    "view_releases": {"platform-admin", "developer", "qa", "release-manager", "viewer"},
+    "create_releases": {"platform-admin", "developer", "release-manager"},
+    "upload_evidence": {"platform-admin", "developer", "release-manager"},
+    "execute_promotion": {"platform-admin", "release-manager"},
+    "view_evidence": {"platform-admin", "developer", "qa", "release-manager", "viewer"},
+    "configure_policies": {"platform-admin"},
+    "manage_storage_providers": {"platform-admin"},
+}
+
+
+def require_release_permission(principal, permission: str, environment: str | None = None) -> None:
+    """Map Release Trust permissions onto the platform's existing role model."""
+    from main import principal_has_role, require_environment_permission
+    if not principal_has_role(principal, RELEASE_TRUST_PERMISSION_ROLES[permission]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Release Trust permission required: {permission}")
+    if environment:
+        require_environment_permission(principal, environment, "Release Trust action")
+
+
 def require_release_write_access(principal, environment: str) -> None:
-    from main import ROLE_DEVELOPER, ROLE_PLATFORM_ADMIN, ROLE_RELEASE_MANAGER, principal_has_role, require_environment_permission
-    if not principal_has_role(principal, {ROLE_PLATFORM_ADMIN, ROLE_DEVELOPER, ROLE_RELEASE_MANAGER}):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Release Trust write access requires platform-admin, developer, or release-manager role.")
-    require_environment_permission(principal, environment, "Release Trust action")
+    require_release_permission(principal, "create_releases", environment)
 
 
 def resolved_principal(principal):
@@ -55,11 +73,13 @@ RUN_EXAMPLES = {
 
 
 @router.post("/runs", status_code=201)
-def create_release_trust_run(payload: ReleaseTrustPayload = Body(..., openapi_examples=RUN_EXAMPLES), principal=Depends(platform_principal)):
+def create_release_trust_run(payload: ReleaseTrustPayload = Body(..., openapi_examples=RUN_EXAMPLES), principal=Depends(platform_principal), x_request_id: str | None = Header(None)):
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     if resolved_principal(principal):
         require_release_write_access(principal, data["release"]["environment"])
-    return ingest_release_trust(data)
+    result = ingest_release_trust(data)
+    audit("release.create", data["release"]["release_id"], "success", principal=resolved_principal(principal), correlation_id=x_request_id)
+    return result
 
 
 @router.get("/runs")
@@ -68,12 +88,14 @@ def list_release_trust_runs(principal=Depends(platform_principal)):
 
 
 @router.post("/promotions", status_code=201)
-def create_promotion(payload: PromotionRequest, principal=Depends(platform_principal)):
+def create_promotion(payload: PromotionRequest, principal=Depends(platform_principal), x_request_id: str | None = Header(None)):
     principal = resolved_principal(principal)
     release = get_release_trust_detail(payload.release_id, principal=principal)
     if principal:
-        require_release_write_access(principal, release["release"]["environment"])
-    return request_promotion(payload.release_id, payload.actor, principal=principal)
+        require_release_permission(principal, "execute_promotion", release["release"]["environment"])
+    result = request_promotion(payload.release_id, payload.actor, principal=principal)
+    audit("promotion.execute", payload.release_id, result["promotion_status"].lower(), principal=principal, correlation_id=x_request_id)
+    return result
 
 
 @router.get("/promotions")
@@ -112,11 +134,13 @@ def create_runner_release(payload: RunnerReleaseCreate, principal=Depends(platfo
 
 
 @router.post("/runner/v1/releases/{release_id}/evidence", status_code=201, tags=["Runner Integration"])
-def upload_runner_evidence(release_id: str, payload: EvidenceUpload, principal=Depends(platform_principal)):
+def upload_runner_evidence(release_id: str, payload: EvidenceUpload, principal=Depends(platform_principal), x_request_id: str | None = Header(None)):
     release = get_release_trust_detail(release_id, principal=resolved_principal(principal))
-    if resolved_principal(principal): require_release_write_access(principal, release["release"]["environment"])
+    if resolved_principal(principal): require_release_permission(principal, "upload_evidence", release["release"]["environment"])
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-    return publish_runner_evidence(release_id, data)
+    result = publish_runner_evidence(release_id, data)
+    audit("evidence.upload", release_id, "success", principal=resolved_principal(principal), correlation_id=x_request_id)
+    return result
 
 
 @router.patch("/runner/v1/releases/{release_id}/status", tags=["Runner Integration"])
@@ -137,3 +161,26 @@ def publish_pipeline_event(release_id: str, payload: RunnerPipelineEvent, princi
 def get_runner_ingestion_status(release_id: str, principal=Depends(platform_principal)):
     get_release_trust_detail(release_id, principal=resolved_principal(principal))
     return get_runner_status(release_id)
+
+
+@router.get("/health", tags=["Operations"])
+def release_trust_health():
+    """Readiness-safe component health with no credentials or topology exposure."""
+    from main import release_trust_object_store
+    return health_report(release_trust_object_store)
+
+
+@router.get("/metrics", tags=["Operations"])
+def release_trust_metrics(principal=Depends(platform_principal)):
+    principal = resolved_principal(principal)
+    if principal:
+        require_release_permission(principal, "manage_storage_providers")
+    return {"metrics": metrics.snapshot()}
+
+
+@router.get("/audit", tags=["Operations"])
+def release_trust_audit(limit: int = Query(100, ge=1, le=500), principal=Depends(platform_principal)):
+    principal = resolved_principal(principal)
+    if principal:
+        require_release_permission(principal, "manage_storage_providers")
+    return {"events": list_audit_logs(limit)}

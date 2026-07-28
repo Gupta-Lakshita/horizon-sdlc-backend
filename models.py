@@ -177,6 +177,19 @@ class PipelineEvent(Base):
     release_run = relationship("ReleaseRun", back_populates="pipeline_events")
 
 
+class ReleaseTrustAuditLog(Base):
+    """Additive, append-only operational audit trail for Release Trust."""
+    __tablename__ = "release_trust_audit_logs"
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    identity = Column(String, nullable=False)
+    operation = Column(String, nullable=False, index=True)
+    target = Column(String, nullable=False)
+    result = Column(String, nullable=False)
+    correlation_id = Column(String, nullable=True, index=True)
+    details_json = Column(Text, nullable=True)
+
+
 class ReleaseEvidenceBase:
     id = Column(Integer, primary_key=True)
     release_run_id = Column(Integer, ForeignKey("release_runs.id"), unique=True, nullable=False)

@@ -25,6 +25,7 @@ import hashlib
 import re
 import threading
 import time
+import uuid
 from html import escape
 
 from database import SessionLocal, engine, Base
@@ -43,6 +44,7 @@ from release_trust_repository import backfill_policy_evaluations, seed_release_t
 from policy_engine import default_policy_engine
 from storage import initialize_object_store
 from release_trust_service import configure_object_store
+from release_trust_operations import metrics, validate_configuration
 
 
 # Setup logging
@@ -52,10 +54,36 @@ logger = logging.getLogger(__name__)
 app = FastAPI(root_path="/pipeline/api")
 app.include_router(release_trust_router)
 
+
+@app.middleware("http")
+async def release_trust_observability(request: Request, call_next):
+    """Add request correlation and provider-neutral API measurements."""
+    correlation_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        metrics.increment("release_trust.api_errors")
+        raise
+    finally:
+        metrics.increment("release_trust.api_requests")
+    response.headers["X-Request-ID"] = correlation_id
+    # Latency is accumulated in milliseconds; exporters can derive averages.
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    for _ in range(max(1, elapsed_ms // 100)):
+        metrics.increment("release_trust.api_latency_100ms")
+    if response.status_code >= 400:
+        metrics.increment("release_trust.api_errors")
+    return response
+
 # Resolve the evidence provider once at process initialization and inject only
 # its provider-neutral ObjectStore interface into Release Trust.
 release_trust_object_store = initialize_object_store()
 configure_object_store(release_trust_object_store)
+
+_release_trust_configuration_errors = validate_configuration()
+if _release_trust_configuration_errors and os.getenv("RELEASE_TRUST_STRICT_CONFIG", "false").lower() == "true":
+    raise RuntimeError("Release Trust configuration invalid: " + "; ".join(_release_trust_configuration_errors))
 
 Base.metadata.create_all(bind=engine)
 def ensure_release_trust_policy_schema() -> None:

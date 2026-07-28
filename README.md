@@ -84,3 +84,11 @@ needs to implement `upload_json`, `download_json`, `exists`, `delete`, and
 `build_reference`, then register its constructor in the centralized storage
 factory. `main.py` selects and injects the configured `ObjectStore` once at
 startup; Release Trust services depend only on that interface.
+
+## Production operations
+
+Phase 15 adds structured audit records, role-mapped operational permissions,
+health and metrics endpoints, configuration validation, and S3-compatible
+(including MinIO) and Azure Blob provider adapters. See
+[the production readiness guide](docs/phase-15-production-readiness.md) for
+deployment, backup, monitoring, and upgrade guidance.

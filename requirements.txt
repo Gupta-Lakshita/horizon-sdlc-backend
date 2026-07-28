@@ -6,3 +6,4 @@ requests
 cryptography
 ldap3
 sqlalchemy
+azure-storage-blob

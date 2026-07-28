@@ -5,8 +5,8 @@
 Run the existing Docker Compose deployment with a persistent volume mounted at
 `/app/data`. Set `DATABASE_URL` (or `DATABASE_PATH`), `EVIDENCE_DATA_PATH`,
 `GITHUB_WEBHOOK_SECRET`, and `BACKEND_SESSION_SECRET` before startup. Set
-`RELEASE_TRUST_STRICT_CONFIG=true` in production: it rejects local object
-storage and `LOCAL_DEV_AUTH=true`. Place the backend behind a TLS-terminating
+`RELEASE_TRUST_STRICT_CONFIG=true` in production: it rejects missing webhook
+secrets and `LOCAL_DEV_AUTH=true`. Place the backend behind a TLS-terminating
 reverse proxy, forward `X-Request-ID`, and restrict `/pipeline/api` to trusted
 origins with `BACKEND_CORS_ORIGINS`.
 

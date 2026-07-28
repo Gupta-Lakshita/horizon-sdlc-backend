@@ -4,7 +4,7 @@ from release_trust_repository import get_promotion_decision, get_promotion_decis
 from release_trust_service import get_release_trust_detail, get_release_trust_runs, get_runner_status, ingest_release_trust, ingest_runner_release, publish_runner_event, publish_runner_evidence, request_promotion, update_runner_status
 from release_trust_schemas import PromotionRequest, ReleaseTrustPayload, ReleaseTrustDetailResponse
 from runner_integration_schemas import EvidenceUpload, RunnerPipelineEvent, RunnerReleaseCreate, RunnerStatusUpdate
-from release_trust_operations import audit, health_report, list_audit_logs, metrics
+from release_trust_operations import health_report, list_audit_logs, metrics
 
 
 router = APIRouter(prefix="/release-trust", tags=["Release Trust"])
@@ -77,9 +77,7 @@ def create_release_trust_run(payload: ReleaseTrustPayload = Body(..., openapi_ex
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     if resolved_principal(principal):
         require_release_write_access(principal, data["release"]["environment"])
-    result = ingest_release_trust(data)
-    audit("release.create", data["release"]["release_id"], "success", principal=resolved_principal(principal), correlation_id=x_request_id)
-    return result
+    return ingest_release_trust(data, principal=resolved_principal(principal), correlation_id=x_request_id)
 
 
 @router.get("/runs")
@@ -93,9 +91,7 @@ def create_promotion(payload: PromotionRequest, principal=Depends(platform_princ
     release = get_release_trust_detail(payload.release_id, principal=principal)
     if principal:
         require_release_permission(principal, "execute_promotion", release["release"]["environment"])
-    result = request_promotion(payload.release_id, payload.actor, principal=principal)
-    audit("promotion.execute", payload.release_id, result["promotion_status"].lower(), principal=principal, correlation_id=x_request_id)
-    return result
+    return request_promotion(payload.release_id, payload.actor, principal=principal, correlation_id=x_request_id)
 
 
 @router.get("/promotions")
@@ -138,9 +134,7 @@ def upload_runner_evidence(release_id: str, payload: EvidenceUpload, principal=D
     release = get_release_trust_detail(release_id, principal=resolved_principal(principal))
     if resolved_principal(principal): require_release_permission(principal, "upload_evidence", release["release"]["environment"])
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-    result = publish_runner_evidence(release_id, data)
-    audit("evidence.upload", release_id, "success", principal=resolved_principal(principal), correlation_id=x_request_id)
-    return result
+    return publish_runner_evidence(release_id, data, principal=resolved_principal(principal), correlation_id=x_request_id)
 
 
 @router.patch("/runner/v1/releases/{release_id}/status", tags=["Runner Integration"])

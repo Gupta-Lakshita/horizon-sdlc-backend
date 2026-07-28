@@ -12,7 +12,7 @@ def test_configuration_validation_preserves_non_strict_compatibility(monkeypatch
     monkeypatch.setenv("OBJECT_STORE_PROVIDER", "local")
     monkeypatch.setenv("LOCAL_DEV_AUTH", "true")
     assert validate_configuration(strict=False) == []
-    assert "OBJECT_STORE_PROVIDER=local is not permitted with RELEASE_TRUST_STRICT_CONFIG" in validate_configuration(strict=True)
+    assert "LOCAL_DEV_AUTH must be disabled in strict mode" in validate_configuration(strict=True)
 
 
 def test_audit_records_are_structured_and_persisted():

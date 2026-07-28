@@ -54,7 +54,7 @@ def _store_evidence(payload: Dict[str, Any], object_store: ObjectStore) -> Dict[
         raise
 
 
-def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | None = None) -> Dict[str, Any]:
+def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | None = None, principal=None, correlation_id: str | None = None) -> Dict[str, Any]:
     """Persist CI evidence or a normalized minimal manual-test payload."""
     release = payload.get("release", {})
     release_id = release.get("release_id")
@@ -65,7 +65,7 @@ def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | No
     try:
         validate_license(default_license_from_env(), "Release Promotion Pipeline", release.get("environment", "dev"), ["release_trust"])
     except LicenseValidationError as exc:
-        audit("release.create", str(release_id), "denied", details={"reason": "license"})
+        audit("release.create", str(release_id), "denied", principal=principal, correlation_id=correlation_id, details={"reason": "license"})
         raise HTTPException(status_code=403, detail="Release Trust is not enabled for this license") from exc
     try:
         application = resolve_platform_application(release)
@@ -99,7 +99,7 @@ def ingest_release_trust(payload: Dict[str, Any], object_store: ObjectStore | No
         result = create_release(payload_for_persistence, store)
         metrics.increment("release_trust.releases_created")
         metrics.increment("release_trust.evidence_uploads")
-        audit("release.create", str(release_id), "success")
+        audit("release.create", str(release_id), "success", principal=principal, correlation_id=correlation_id)
         return result
     except ObjectAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail="evidence already exists for release_id") from exc
@@ -156,7 +156,7 @@ def get_release_trust_runs(object_store: ObjectStore | None = None, principal=No
         raise HTTPException(status_code=500, detail=f"Release Trust evidence unavailable: {exc}") from exc
 
 
-def request_promotion(release_id: str, actor: str = "system", object_store: ObjectStore | None = None, principal=None) -> Dict[str, Any]:
+def request_promotion(release_id: str, actor: str = "system", object_store: ObjectStore | None = None, principal=None, correlation_id: str | None = None) -> Dict[str, Any]:
     """Apply the deployment gate to the persisted policy; never request policy input."""
     if not release_id or not release_id.strip():
         raise HTTPException(status_code=422, detail="release_id is required")
@@ -181,7 +181,7 @@ def request_promotion(release_id: str, actor: str = "system", object_store: Obje
         metrics.increment("release_trust.promotion_attempts")
         if decision["promotion_status"] != "ALLOW":
             metrics.increment("release_trust.promotion_failures")
-        audit("promotion.execute", release_id, decision["promotion_status"].lower(), principal=principal, details={"policy_status": decision["policy_status"]})
+        audit("promotion.execute", release_id, decision["promotion_status"].lower(), principal=principal, correlation_id=correlation_id, details={"policy_status": decision["policy_status"]})
     except ValueError as exc:
         if str(exc) == "promotion already exists":
             raise HTTPException(status_code=409, detail="promotion already exists") from exc
@@ -209,12 +209,12 @@ def ingest_runner_release(contract: Dict[str, Any]) -> Dict[str, Any]:
     return release
 
 
-def publish_runner_evidence(release_id: str, evidence: Dict[str, Any]) -> Dict[str, Any]:
+def publish_runner_evidence(release_id: str, evidence: Dict[str, Any], principal=None, correlation_id: str | None = None) -> Dict[str, Any]:
     result = add_runner_evidence(release_id, evidence)
     if result is None: raise HTTPException(status_code=404, detail="Release Trust run not found")
     add_pipeline_event(release_id, {"event_type": "evidence.uploaded", "occurred_at": evidence.get("occurred_at", "runner"), "payload": {"evidence_type": evidence["evidence_type"], "name": evidence["name"]}})
     metrics.increment("release_trust.evidence_uploads")
-    audit("evidence.upload", release_id, "success", details={"evidence_type": evidence["evidence_type"]})
+    audit("evidence.upload", release_id, "success", principal=principal, correlation_id=correlation_id, details={"evidence_type": evidence["evidence_type"]})
     return result
 
 

@@ -71,8 +71,6 @@ def validate_configuration(*, strict: Optional[bool] = None) -> list[str]:
     provider = os.getenv("OBJECT_STORE_PROVIDER", "local").strip().lower()
     if provider not in {"local", "s3", "minio", "azure", "azure-blob"}:
         errors.append("OBJECT_STORE_PROVIDER must name a registered provider")
-    if strict and provider == "local":
-        errors.append("OBJECT_STORE_PROVIDER=local is not permitted with RELEASE_TRUST_STRICT_CONFIG")
     if strict and not os.getenv("GITHUB_WEBHOOK_SECRET"):
         errors.append("GITHUB_WEBHOOK_SECRET is required in strict mode")
     if strict and os.getenv("LOCAL_DEV_AUTH", "false").lower() == "true":

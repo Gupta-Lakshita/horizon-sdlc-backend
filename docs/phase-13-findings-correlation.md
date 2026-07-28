@@ -26,3 +26,14 @@ is reproducible and explainable.
 
 Swagger exposes these additive fields through the existing untyped detail
 responses and documents `GET /release-trust/runs/{release_id}/preflight`.
+
+## ObjectStore dependency injection
+
+At application startup `main.py` calls `initialize_object_store()` once. The
+central storage factory resolves `OBJECT_STORE_PROVIDER` (default `local`) and
+returns an `ObjectStore` interface implementation. That instance is injected
+into `ReleaseTrustService` through `configure_object_store`; service and
+repository code use only the interface and never select or inspect a provider.
+Adding a provider therefore means registering its constructor in the factory,
+with no Release Trust business-logic changes. Existing LocalObjectStore
+deployments remain the default.

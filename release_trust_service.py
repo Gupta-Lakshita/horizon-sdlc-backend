@@ -8,17 +8,26 @@ from policy_engine import PolicyEngine
 from promotion_engine import PromotionEngine
 from findings_correlation import correlate_findings
 from promotion_preflight import PromotionPreflightService, TrustScoreCalculator
-from storage import ObjectAlreadyExistsError, ObjectNotFoundError, ObjectStore, ObjectStoreError, get_default_object_store
+from storage import ObjectAlreadyExistsError, ObjectNotFoundError, ObjectStore, ObjectStoreError
 
 
 policy_engine = PolicyEngine()
 promotion_engine = PromotionEngine()
 preflight_service = PromotionPreflightService()
 trust_score_calculator = TrustScoreCalculator()
+_object_store: ObjectStore | None = None
+
+
+def configure_object_store(object_store: ObjectStore) -> None:
+    """Inject the startup-selected provider into Release Trust business logic."""
+    global _object_store
+    _object_store = object_store
 
 
 def _store() -> ObjectStore:
-    return get_default_object_store()
+    if _object_store is None:
+        raise RuntimeError("Release Trust ObjectStore dependency has not been configured")
+    return _object_store
 
 
 def _store_evidence(payload: Dict[str, Any], object_store: ObjectStore) -> Dict[str, str]:

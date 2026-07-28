@@ -41,7 +41,8 @@ from enterprise.licensing import (
 from routers.release_trust import router as release_trust_router
 from release_trust_repository import backfill_policy_evaluations, seed_release_trust_data
 from policy_engine import default_policy_engine
-from storage import get_default_object_store
+from storage import initialize_object_store
+from release_trust_service import configure_object_store
 
 
 # Setup logging
@@ -50,6 +51,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(root_path="/pipeline/api")
 app.include_router(release_trust_router)
+
+# Resolve the evidence provider once at process initialization and inject only
+# its provider-neutral ObjectStore interface into Release Trust.
+release_trust_object_store = initialize_object_store()
+configure_object_store(release_trust_object_store)
 
 Base.metadata.create_all(bind=engine)
 def ensure_release_trust_policy_schema() -> None:
@@ -97,7 +103,7 @@ def ensure_release_trust_platform_context_schema() -> None:
 
 ensure_release_trust_platform_context_schema()
 seed_release_trust_data()
-backfill_policy_evaluations(default_policy_engine, get_default_object_store())
+backfill_policy_evaluations(default_policy_engine, release_trust_object_store)
 
 
 def ensure_environment_catalog_schema() -> None:

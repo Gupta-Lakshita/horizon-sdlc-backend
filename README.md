@@ -81,4 +81,6 @@ path is inside the existing `backend-data` volume and survives restarts.
 
 `storage/object_store.py` is the provider contract. A future S3 provider only
 needs to implement `upload_json`, `download_json`, `exists`, `delete`, and
-`build_reference`, then replace the composition in `storage.get_default_object_store()`.
+`build_reference`, then register its constructor in the centralized storage
+factory. `main.py` selects and injects the configured `ObjectStore` once at
+startup; Release Trust services depend only on that interface.

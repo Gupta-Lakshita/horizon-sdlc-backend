@@ -1,9 +1,26 @@
 """Release Trust ingestion orchestration and request validation."""
-from typing import Dict, Any
+from datetime import datetime, timezone
+from typing import Dict, Any, Iterable, Optional
+from uuid import uuid4
 
 from fastapi import HTTPException
 
-from release_trust_repository import add_pipeline_event, add_runner_evidence, add_runner_execution, create_promotion_decision, create_release, get_release_by_id, get_release_runs, get_runner_ingestion_status, release_is_visible_to_principal, resolve_platform_application, update_runner_execution_status
+from release_trust_repository import (
+    add_pipeline_event,
+    add_runner_evidence,
+    add_runner_execution,
+    append_pipeline_execution_event,
+    create_promotion_decision,
+    create_release,
+    get_latest_release_id,
+    get_release_by_id,
+    get_release_runs,
+    get_runner_ingestion_status,
+    release_is_visible_to_principal,
+    resolve_platform_application,
+    update_policy_evaluation,
+    update_runner_execution_status,
+)
 from policy_engine import PolicyEngine
 from promotion_engine import PromotionEngine
 from findings_correlation import correlate_findings
@@ -30,6 +47,50 @@ def _store() -> ObjectStore:
     if _object_store is None:
         raise RuntimeError("Release Trust ObjectStore dependency has not been configured")
     return _object_store
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _pipeline_event(stage: str, actor: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    return {"stage": stage, "status": "queued", "recorded_at": _timestamp(), "actor": actor or "system", **metadata}
+
+
+def start_build_pipeline_release(*, application_id: int, application: str, environment: str, branch: str, actor: str, repository_url: str, image_name: str, registry: str, pipeline_job: str) -> Dict[str, Any]:
+    """Create the Release Trust run that accompanies an accepted build request."""
+    release_id = f"pipeline-{application_id}-{uuid4().hex}"
+    payload = {
+        "release": {"release_id": release_id, "application_id": application_id, "application": application, "environment": environment.lower(), "build_number": 0, "build_time": _timestamp(), "commit_sha": "pending", "branch": branch or "main"},
+        "artifact": {"image_name": image_name or application, "image_tag": "pending", "image_digest": "sha256:pending", "registry": registry or "pending"},
+        "sbom": {"status": "pending", "format": None},
+        "signature": {"status": "pending", "provider": "pipeline"},
+        "provenance": {"status": "pending", "slsa_level": None},
+        "scan_evidence": {"status": "pending", "critical": 0, "high": 0},
+        "promotion": {"current_environment": environment.lower(), "promotion_eligibility": "pending", "promotion_history": []},
+        "pipeline_execution": [_pipeline_event("build", actor, {"pipeline_job": pipeline_job, "repository_url": repository_url, "release_metadata_status": "pending", "evidence_collection": "initialized"})],
+    }
+    return ingest_release_trust(payload)
+
+
+def record_validation_pipeline_start(*, application_id: int, actor: str, pipeline_job: str, enabled_gates: Iterable[str]) -> Optional[Dict[str, Any]]:
+    """Associate validation with the newest application run and retain queued evidence."""
+    release_id = get_latest_release_id(application_id)
+    if release_id is None:
+        return None
+    store = _store()
+    release = get_release_by_id(release_id, store)
+    evaluation = policy_engine.evaluate(release)
+    update_policy_evaluation(release_id, evaluation, store)
+    return append_pipeline_execution_event(release_id, _pipeline_event("validation", actor, {"pipeline_job": pipeline_job, "scan_status": (release.get("scan_evidence") or {}).get("status", "pending"), "policy_evaluation": evaluation["overall_decision"], "validation_evidence": {"status": "queued", "enabled_gates": sorted(enabled_gates)}}), store)
+
+
+def record_promotion_pipeline_start(*, application_id: int, actor: str, pipeline_job: str, source_environment: str, target_environment: str, image_tag: str) -> Optional[Dict[str, Any]]:
+    """Record promotion intent without bypassing the immutable Promotion Engine decision."""
+    release_id = get_latest_release_id(application_id, image_tag or None) or get_latest_release_id(application_id)
+    if release_id is None:
+        return None
+    return append_pipeline_execution_event(release_id, _pipeline_event("promotion", actor, {"pipeline_job": pipeline_job, "source_environment": source_environment.lower(), "target_environment": target_environment.lower(), "image_tag": image_tag or None, "promotion_tracking": "requested"}), _store())
 
 
 def _store_evidence(payload: Dict[str, Any], object_store: ObjectStore) -> Dict[str, str]:

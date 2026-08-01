@@ -111,6 +111,9 @@ class ReleaseRun(Base):
     provenance_reference = Column(String, nullable=True)
     scan_reference = Column(String, nullable=True)
     bundle_reference = Column(String, nullable=True)
+    # Phase 11: append-only pipeline request/audit events.  Canonical evidence
+    # remains in the existing evidence records and ObjectStore references.
+    pipeline_execution = Column(Text, nullable=True)
     # Phase 10: reuse the platform application catalog rather than creating a
     # parallel Release Trust project or repository entity.
     application_id = Column(Integer, ForeignKey("applications.id"), nullable=True, index=True)

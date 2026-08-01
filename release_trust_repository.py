@@ -70,12 +70,14 @@ def _detail(run: ReleaseRun, object_store: Optional[ObjectStore] = None) -> Dict
     context = _platform_context(run)
     if context:
         detail["context"] = context
+    detail["pipeline_execution"] = json.loads(run.pipeline_execution or "[]")
     return detail
 
 
 def _add_release(session, payload: Dict[str, Any]) -> ReleaseRun:
     references = payload.get("evidence_references")
     run = ReleaseRun(**payload["release"], **(references or {}))
+    run.pipeline_execution = json.dumps(payload.get("pipeline_execution") or [])
     session.add(run); session.flush()
     policy = dict(payload["policy_evaluation"])
     policy["overall_decision"] = policy.get("overall_decision", policy.get("status", "pending")).lower()
@@ -181,6 +183,48 @@ def get_release_by_id(release_id: str, object_store: Optional[ObjectStore] = Non
     with SessionLocal() as session:
         run = session.query(ReleaseRun).options(*_LOAD_OPTIONS).filter(ReleaseRun.release_id == release_id).one_or_none()
         return _detail(run, object_store) if run else None
+
+
+def get_latest_release_id(application_id: int, image_tag: Optional[str] = None) -> Optional[str]:
+    """Return the newest linked run, optionally for the promoted image tag."""
+    with SessionLocal() as session:
+        query = session.query(ReleaseRun).join(Artifact).filter(ReleaseRun.application_id == application_id)
+        if image_tag:
+            query = query.filter(Artifact.image_tag == image_tag)
+        run = query.order_by(ReleaseRun.id.desc()).first()
+        return run.release_id if run else None
+
+
+def append_pipeline_execution_event(release_id: str, event: Dict[str, Any], object_store: Optional[ObjectStore] = None) -> Optional[Dict[str, Any]]:
+    """Append request lifecycle evidence without mutating immutable CI evidence."""
+    with SessionLocal() as session:
+        run = session.query(ReleaseRun).options(*_LOAD_OPTIONS).filter(ReleaseRun.release_id == release_id).one_or_none()
+        if run is None:
+            return None
+        events = json.loads(run.pipeline_execution or "[]")
+        events.append(event)
+        run.pipeline_execution = json.dumps(events)
+        session.commit()
+        session.refresh(run)
+        return _detail(run, object_store)
+
+
+def update_policy_evaluation(release_id: str, evaluation: Dict[str, Any], object_store: Optional[ObjectStore] = None) -> Optional[Dict[str, Any]]:
+    """Persist a newly evaluated policy without accepting caller policy input."""
+    with SessionLocal() as session:
+        run = session.query(ReleaseRun).options(*_LOAD_OPTIONS).filter(ReleaseRun.release_id == release_id).one_or_none()
+        if run is None:
+            return None
+        policy = run.policy_evaluation
+        policy.overall_decision = evaluation["overall_decision"]
+        policy.passed_rules = evaluation["passed_rules"]
+        policy.warning_rules = evaluation["warning_rules"]
+        policy.blocked_rules = evaluation["blocked_rules"]
+        policy.summary = evaluation["summary"]
+        policy.rules = json.dumps(evaluation["rules"])
+        session.commit()
+        session.refresh(run)
+        return _detail(run, object_store)
 
 
 def create_release(payload: Dict[str, Any], object_store: Optional[ObjectStore] = None) -> Dict[str, Any]:

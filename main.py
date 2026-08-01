@@ -41,6 +41,7 @@ from enterprise.licensing import (
 
 from routers.release_trust import router as release_trust_router
 from release_trust_repository import backfill_policy_evaluations, seed_release_trust_data
+from release_trust_service import record_promotion_pipeline_start, record_validation_pipeline_start, start_build_pipeline_release
 from policy_engine import default_policy_engine
 from storage import initialize_object_store
 from release_trust_service import configure_object_store
@@ -130,6 +131,17 @@ def ensure_release_trust_platform_context_schema() -> None:
 
 
 ensure_release_trust_platform_context_schema()
+
+
+def ensure_release_trust_pipeline_execution_schema() -> None:
+    """Add Phase 11 pipeline audit data without changing existing releases."""
+    with engine.begin() as connection:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(release_runs)")).fetchall()}
+        if "pipeline_execution" not in columns:
+            connection.execute(text("ALTER TABLE release_runs ADD COLUMN pipeline_execution TEXT"))
+
+
+ensure_release_trust_pipeline_execution_schema()
 seed_release_trust_data()
 backfill_policy_evaluations(default_policy_engine, release_trust_object_store)
 
@@ -1150,9 +1162,12 @@ def decode_session_token(token: str) -> AuthPrincipal:
 
 
 def get_current_principal(authorization: Optional[str] = Header(None)) -> AuthPrincipal:
-    if LOCAL_DEV_AUTH_ENABLED and (
-        not authorization or not authorization.lower().startswith("bearer ")
-    ):
+    # Local Compose deliberately has no identity-provider contract.  The SPA
+    # may retain a token from a prior container/session, and nginx correctly
+    # forwards that Authorization header.  Do not let that stale token turn a
+    # development bypass into normal token validation.  Production keeps the
+    # existing validation path because LOCAL_DEV_AUTH defaults to false.
+    if LOCAL_DEV_AUTH_ENABLED:
         return create_local_dev_principal("local-dev")
     if not RBAC_ENFORCEMENT_ENABLED:
         return AuthPrincipal(
@@ -3080,13 +3095,24 @@ def create_devops_pipeline(
             f"trigger build for job '{job_name}'", build_response
         )
 
-    ensure_application_registered(
+    application = ensure_application_registered(
         db,
         name=job_name,
         owner_email=principal_email(principal),
         repo_url=request.repo_url.strip(),
         branch=request.branch.strip() or "main",
         app_type=request.project_type,
+    )
+    release_trust = start_build_pipeline_release(
+        application_id=application.id,
+        application=application.name,
+        environment=env_values["TARGET_ENV"],
+        branch=request.branch.strip() or "main",
+        actor=principal_email(principal),
+        repository_url=request.repo_url.strip(),
+        image_name=env_values["ECR_REPOSITORY"],
+        registry=env_values["ECR_REGISTRY"],
+        pipeline_job=job_name,
     )
 
     usage_report = report_license_usage(
@@ -3116,6 +3142,7 @@ def create_devops_pipeline(
         "environment_preflight": sanitize_preflight_for_principal(preflight, principal),
         "create_response_code": create_response_code,
         "build_response_code": build_response.status_code,
+        "release_trust": {"release_id": release_trust["release"]["release_id"], "status": "initialized"},
     }
 
 
@@ -3335,13 +3362,29 @@ def create_test_devops_pipeline(
             f"trigger build for job '{job_name}'", build_response
         )
 
-    ensure_application_registered(
+    application = ensure_application_registered(
         db,
         name=request.project_name.strip(),
         owner_email=principal_email(principal),
         repo_url=request.repo_url.strip(),
         branch=request.branch.strip() or "main",
         app_type=request.project_type,
+    )
+    release_trust = record_validation_pipeline_start(
+        application_id=application.id,
+        actor=principal_email(principal),
+        pipeline_job=job_name,
+        enabled_gates=(
+            name for name, enabled in {
+                "sonarqube": request.ENABLE_SONARQUBE,
+                "checkmarx": request.ENABLE_CHECKMARX,
+                "trivy": request.ENABLE_TRIVY,
+                "opa": request.ENABLE_OPA,
+                "selenium": request.ENABLE_SELENIUM,
+                "newman": request.ENABLE_NEWMAN,
+                "jmeter": request.ENABLE_JMETER,
+            }.items() if enabled
+        ),
     )
 
     usage_report = report_license_usage(
@@ -3378,6 +3421,7 @@ def create_test_devops_pipeline(
         "environment_preflight": sanitize_preflight_for_principal(preflight, principal),
         "create_response_code": create_response_code,
         "build_response_code": build_response.status_code,
+        "release_trust": {"release_id": release_trust["release"]["release_id"], "status": "validation_queued"} if release_trust else None,
     }
 
 
@@ -3665,6 +3709,16 @@ def create_prod_devops_pipeline(
             f"trigger build for job '{job_name}'", build_response
         )
 
+    application = db.query(Application).filter_by(name=project_name).first()
+    release_trust = record_promotion_pipeline_start(
+        application_id=application.id,
+        actor=principal_email(principal),
+        pipeline_job=job_name,
+        source_environment=source_env_values["TARGET_ENV"],
+        target_environment=target_env_values["TARGET_ENV"],
+        image_tag=values["SOURCE_IMAGE_TAG"],
+    ) if application else None
+
     usage_report = report_license_usage(
         validated_license,
         "pipeline.release_promotion.requested",
@@ -3695,6 +3749,7 @@ def create_prod_devops_pipeline(
         },
         "create_response_code": create_response_code,
         "build_response_code": build_response.status_code,
+        "release_trust": {"release_id": release_trust["release"]["release_id"], "status": "promotion_queued"} if release_trust else None,
     }
 
 
